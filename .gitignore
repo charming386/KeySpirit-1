@@ -1,0 +1,28 @@
+# 构建产物
+bin/
+obj/
+dist/
+publish/
+*.user
+*.suo
+.vs/
+
+# 发布包（走 Release，不进仓库）
+*.zip
+
+# 临时文件
+*.log
+*.tmp
+__pycache__/
+*.pyc
+
+# 根目录临时截图
+/*.png
+
+# 不进公开仓库的文档（策划与需求，仅本地保留）
+/键灵_策划设计稿.md
+/需求.md
+/SVG生成清单.md
+/_归档/
+/release/
+/img/

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400" font-family="Segoe UI, Microsoft YaHei UI, sans-serif"><defs></defs><rect width="800" height="400" fill="#0d1117"/>
+<rect width="800" height="400" fill="#0f1318"/>
+<rect x="90" y="60" width="620" height="280" rx="8" fill="#141a22" stroke="#243040"/>
+<rect x="90" y="60" width="620" height="34" rx="8" fill="#1a232e"/>
+<text x="112" y="83" fill="#4fd6e0" font-size="12" letter-spacing="2">STATISTICS</text>
+<rect x="130" y="263" width="34" height="27" fill="#2a8c96"/>
+<rect x="130" y="263" width="34" height="4" fill="#4fd6e0"/>
+<rect x="196" y="227" width="34" height="63" fill="#2a8c96"/>
+<rect x="196" y="227" width="34" height="4" fill="#4fd6e0"/>
+<rect x="262" y="241" width="34" height="49" fill="#2a8c96"/>
+<rect x="262" y="241" width="34" height="4" fill="#4fd6e0"/>
+<rect x="328" y="191" width="34" height="99" fill="#2a8c96"/>
+<rect x="328" y="191" width="34" height="4" fill="#4fd6e0"/>
+<rect x="394" y="208" width="34" height="82" fill="#2a8c96"/>
+<rect x="394" y="208" width="34" height="4" fill="#4fd6e0"/>
+<rect x="460" y="168" width="34" height="122" fill="#2a8c96"/>
+<rect x="460" y="168" width="34" height="4" fill="#4fd6e0"/>
+<rect x="526" y="179" width="34" height="111" fill="#2a8c96"/>
+<rect x="526" y="179" width="34" height="4" fill="#4fd6e0"/>
+<rect x="592" y="148" width="34" height="142" fill="#2a8c96"/>
+<rect x="592" y="148" width="34" height="4" fill="#4fd6e0"/>
+<line x1="120" y1="292" x2="680" y2="292" stroke="#2b3a49"/>
+</svg>

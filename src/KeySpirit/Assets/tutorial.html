@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>键灵 · 教程</title>
+<style>
+  :root{
+    --bg:#0f1318; --panel:#151a21; --panel2:#1b222b;
+    --line:#26313b; --fg:#e6edf1; --dim:#8a97a2;
+    --accent:#4fd6e0; --amber:#f2a63b; --green:#3ec18f; --red:#c2453f;
+    --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f8fa; --panel:#ffffff; --panel2:#f0f3f6; --line:#dfe6ec;
+           --fg:#16202a; --dim:#5d6b76; --accent:#0e8a95; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--fg);font:15px/1.75 "Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+       display:grid;grid-template-columns:220px 1fr;grid-template-rows:3px 1fr;height:100vh;overflow:hidden}
+  #progress{grid-column:1/3;height:3px;background:var(--accent);width:0;transition:none}
+  nav{background:var(--panel);border-right:1px solid var(--line);padding:22px 0 40px;overflow-y:auto}
+  nav .brand{display:flex;gap:10px;align-items:center;padding:0 18px 18px}
+  nav .brand img{width:28px;height:28px;image-rendering:pixelated}
+  nav .brand b{font-size:15px;letter-spacing:.5px}
+  nav a{display:block;padding:7px 18px;color:var(--dim);text-decoration:none;font-size:13.5px;
+        border-left:2px solid transparent}
+  nav a:hover{color:var(--fg);background:var(--panel2)}
+  nav a.on{color:var(--accent);border-left-color:var(--accent);background:var(--panel2)}
+  nav .foot{color:var(--dim);font-size:11.5px;padding:18px;line-height:1.6}
+  main{overflow-y:auto;padding:0 0 80px}
+  .wrap{max-width:720px;margin:0 auto;padding:0 28px}
+  h1{font-size:26px;margin:40px 0 6px;letter-spacing:.5px}
+  h2{font-size:19px;margin:44px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);font-family:var(--mono);font-size:14px;margin-right:8px}
+  p{color:var(--fg);margin:10px 0}
+  .lead{color:var(--dim);font-size:14px;margin-bottom:22px}
+  .kicker{color:var(--accent);font-size:12px;letter-spacing:2px;text-transform:uppercase}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin:16px 0}
+  .card.hot{border-color:#3a2f22;background:linear-gradient(180deg,#1c1a16,#151a21)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.4px}
+  code,.num{font-family:var(--mono);font-size:13px;background:var(--panel2);padding:1px 5px;border-radius:4px}
+  ul{padding-left:20px} li{margin:5px 0}
+  .tip{border-left:3px solid var(--accent);background:var(--panel2);padding:10px 14px;margin:16px 0;font-size:13.5px;color:var(--fg)}
+  .warn{border-left:3px solid var(--amber)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+  .stat b{display:block;color:var(--accent);font-family:var(--mono);font-size:17px}
+  .stat span{color:var(--dim);font-size:12px}
+  figure{margin:18px 0}
+  figure img{width:100%;border-radius:8px;border:1px solid var(--line);display:block;image-rendering:pixelated}
+  figcaption{color:var(--dim);font-size:12px;margin-top:6px}
+  .keys{display:flex;gap:6px;align-items:center;margin:8px 0}
+  kbd{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--line);
+      border-bottom-width:2px;border-radius:4px;padding:2px 7px;color:var(--fg)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .keep li::marker{color:var(--green)} .lose li::marker{color:var(--dim)}
+  footer{color:var(--dim);font-size:12px;border-top:1px solid var(--line);margin-top:52px;padding-top:14px}
+</style>
+</head>
+<body>
+<div id="progress"></div>
+
+<nav>
+  <div class="brand"><img src="svg/icon-base.svg" alt=""><b>键灵</b></div>
+  <a href="#s1" class="on">1 · 这是什么</a>
+  <a href="#s2">2 · 五分钟上手</a>
+  <a href="#s3">3 · 本命四器</a>
+  <a href="#s4">4 · 墨根与转生</a>
+  <a href="#s5">5 · 层数与跳层</a>
+  <a href="#s6">6 · 墨潮与墨渊</a>
+  <a href="#s7">7 · 商店与概率</a>
+  <a href="#s8">8 · 常见问题</a>
+  <div class="foot">本页面完全离线，不发起任何网络请求。<br>Esc 或关闭窗口即退出，挂机不会暂停。</div>
+</nav>
+
+<main id="scroller">
+<div class="wrap">
+
+  <div class="kicker">Taskbar Idle · 教程</div>
+  <h1>一只住在任务栏里的墨傀</h1>
+  <p class="lead">它自己打怪、自己爬塔，你只需要偶尔右键看一眼。没有弹窗、不抢焦点、不进任务栏——关掉这个教程，它还在原地干活。</p>
+
+  <figure>
+    <img src="svg/tut-hero.svg" alt="墨渊塔">
+    <figcaption>墨渊：一路往下，越深墨越稠。</figcaption>
+  </figure>
+
+  <h2 id="s1"><span class="n">01</span>这是什么</h2>
+  <p>《键灵》是一个<strong>纯后台</strong>的挂机小游戏。它没有主窗口，只在一个地方露面：<strong>状态栏（系统托盘）里的那个墨滴图标</strong>。</p>
+  <div class="grid">
+    <div class="stat"><b>0</b><span>弹窗 / 通知 / 打断</span></div>
+    <div class="stat"><b>288px</b><span>唯一的交互面板宽度</span></div>
+  </div>
+  <ul>
+    <li>右键（或左键）点托盘图标 → 展开面板，一切操作都在这里。</li>
+    <li>鼠标只是<strong>悬停</strong>在图标上 → 弹出一块只读小提示：层数、HP、状态、待领。</li>
+    <li>双击图标等于开/关面板。失焦自动收起，像系统菜单一样。</li>
+    <li>程序只在后台跑，任务栏不出现按钮，Alt+Tab 里也找不到它。</li>
+  </ul>
+  <div class="tip">唯一会打开新窗口的地方，是你现在看的这个教程（设置 ▸ 打开教程）。其余一切都在那块 288 宽的小面板里完成。</div>
+
+  <h2 id="s2"><span class="n">02</span>五分钟上手</h2>
+  <p>你什么都不用做，它已经在打第 1 层的怪了。想更快一点，就敲键盘——每一次敲击都算数。</p>
+  <figure>
+    <img src="svg/tut-timeline.svg" alt="第一个十分钟">
+    <figcaption>敲击 → 掉袋 → 领取 → 喂墨刃 → 自动下潜。</figcaption>
+  </figure>
+  <table>
+    <tr><th>时间</th><th>发生了什么</th><th>你要做的</th></tr>
+    <tr><td>0–1 分钟</td><td>自动打怪，掉金币与经验</td><td>什么都不用做</td></tr>
+    <tr><td>约 2 分钟</td><td>敲满 100 次 → 掉一个金币袋</td><td>右键 → 领取</td></tr>
+    <tr><td>约 5 分钟</td><td>攒够 50 金币 → 能买 2 颗墨晶</td><td>商店 → 买墨晶 → 本命器 → 强化墨刃</td></tr>
+    <tr><td>10 分钟</td><td>墨刃 +3 左右，第 10 层守层者</td><td>看它自己下潜就行</td></tr>
+  </table>
+  <div class="keys"><kbd>键盘敲击</kbd><span style="color:var(--dim)">只计次数，不记录你敲了什么</span></div>
+  <div class="tip warn">隐私：程序只统计"敲了多少下"，<strong>不记录键值、不记录顺序、不落盘任何输入内容</strong>。关掉「设置 ▸ 敲击监听」后会注销系统级监听。</div>
+
+  <h2 id="s3"><span class="n">03</span>本命四器</h2>
+  <p>墨傀是墨长成的，身上这四件不是装备，是它身体的一部分：<strong>不能换、不能脱、不能分解，只能一直喂</strong>。所以每次回来你只有一个判断——钱够不够再喂一级。</p>
+  <table>
+    <tr><th>本命器</th><th>主属性</th><th>起始</th><th>每 +1 级</th><th>成本系数</th></tr>
+    <tr><td>墨刃</td><td>攻击</td><td>+10</td><td>×1.06</td><td>1.00（最贵）</td></tr>
+    <tr><td>墨衣</td><td>生命</td><td>+80</td><td>×1.06</td><td>0.70</td></tr>
+    <tr><td>墨眸</td><td>暴击率</td><td>+2.0%</td><td>+0.15%</td><td>0.85</td></tr>
+    <tr><td>墨印</td><td>防御</td><td>+4</td><td>×1.06</td><td>0.70</td></tr>
+  </table>
+  <div class="card hot">
+    <strong>全作唯一的策略点：</strong>四件一起喂的总成本约等于单件的 3.25 倍。只喂墨刃能跟住塔，四件齐喂只能跟住三分之一。想爬得动，就先放弃另外三件。
+  </div>
+  <p>强化成本：<span class="num">ceil(2 × 1.062^(n−1) × 件系数)</span> 颗墨晶。注意成本曲线（1.062）比怪物变强（1.06）<strong>略快</strong>——这是故意的，不然你永远不需要转生。</p>
+
+  <h2 id="s4"><span class="n">04</span>墨根与转生</h2>
+  <p>爬到某个层数后，你会发现一层要打十几分钟。那不是卡住，是塔在提醒你：该散了。</p>
+  <figure>
+    <img src="svg/opt-rebirth.svg" alt="转生">
+    <figcaption>转生：层数归 1，属性重置，但墨根留下。</figcaption>
+  </figure>
+  <div class="card">
+    <span class="kicker">一句话</span>
+    <p style="font-size:17px;margin:6px 0 0">1 点墨根 = 永久领先 1 层。</p>
+  </div>
+  <table>
+    <tr><th>条件</th><th>结算</th></tr>
+    <tr><td>本轮最高层 ≥ 50</td><td>墨根 += <span class="num">floor(0.35 × 本轮最高层)</span>，最低 +1</td></tr>
+    <tr><td>重置</td><td>当前层 → 第 1 层；等级 → 1；经验 → 0</td></tr>
+  </table>
+  <div class="two">
+    <div class="card">
+      <strong style="color:var(--green)">保留</strong>
+      <ul class="keep">
+        <li>金币、墨晶</li>
+        <li>四件本命器与全部强化等级</li>
+        <li>待领金币袋</li>
+        <li>墨根、统计、设置</li>
+      </ul>
+    </div>
+    <div class="card">
+      <strong style="color:var(--dim)">重置</strong>
+      <ul class="lose">
+        <li>当前层数</li>
+        <li>等级与经验</li>
+        <li>本轮最高层记录</li>
+      </ul>
+    </div>
+  </div>
+  <div class="tip">转生是唯一有破坏性的操作，所以菜单位上写的是「保留什么」：<span class="num">转生（+175 墨根 · 保留货币与强化）</span>。点一次变「⚠ 确认转生」，10 秒内再点才执行。</div>
+
+  <h2 id="s5"><span class="n">05</span>层数与跳层</h2>
+  <p>塔一共 10,000 层。每层 10 只：第 5 只是精英（更硬、多掉 1 颗墨晶），第 10 只是守层者（最硬、掉 3 颗墨晶），打赢守层者就自动下潜一层。</p>
+  <table>
+    <tr><th>走法</th><th>规则</th></tr>
+    <tr><td>持续爬塔（默认）</td><td>打败守层者自动下一层；连败 3 次退 1 层</td></tr>
+    <tr><td>定层驻守</td><td>赢不推进、输不退，层数冻结；可一直刷同一层攒材料</td></tr>
+    <tr><td>跳层</td><td>只能去<strong>本轮已通过</strong>的层；输入框直接输层号，或用 ±10 微调</td></tr>
+    <tr><td>自动回退</td><td>独立开关；驻守时自动置灰（冻结优先）</td></tr>
+  </table>
+
+  <h2 id="s6"><span class="n">06</span>墨潮与墨渊</h2>
+  <p>第 9,000 层起，墨稠到会自己涌上来——叫<strong>墨潮</strong>。怪物血量、攻击、防御、金币、经验全线每层额外 <span class="num">×1.11</span>，但墨晶掉落不涨。这是一段"明知道难、收益也涨"的冲刺。</p>
+  <figure>
+    <img src="svg/tut-boss.svg" alt="墨渊">
+    <figcaption>第 10,000 层不刷小怪，只有一只墨渊。</figcaption>
+  </figure>
+  <table>
+    <tr><th>阶段</th><th>层数</th><th>怪物血量（量级）</th></tr>
+    <tr><td>寻常</td><td>1 ~ 999</td><td>50 ~ 9.1e+26</td></tr>
+    <tr><td>深处</td><td>3,000</td><td>3.9e+77</td></tr>
+    <tr><td>墨潮起点</td><td>9,000</td><td>2.7e+229</td></tr>
+    <tr><td>墨潮拉满</td><td>9,999</td><td>9.6e+299</td></tr>
+    <tr><td>墨渊</td><td>10,000</td><td style="color:var(--red)">1.8e+303</td></tr>
+  </table>
+  <div class="tip warn">打赢墨渊不是结束，是<strong>回卷</strong>：层数归 1、轮次 +1，货币、强化、墨根全部保留，重新爬第 1~10000 层。可以无限循环。</div>
+
+  <h2 id="s7"><span class="n">07</span>商店与概率</h2>
+  <p>金币只有一个去处：商店。卖的东西只有两类。</p>
+  <table>
+    <tr><th>商品</th><th>价格</th><th>说明</th></tr>
+    <tr><td>墨晶 ×1</td><td>25 金币</td><td>强化材料，唯一硬通货</td></tr>
+    <tr><td>墨晶 ×10</td><td>250 金币</td><td>无折扣，只是少点几次</td></tr>
+    <tr><td>补到够升下一级</td><td>差额 × 25</td><td>一键买齐，钱不够按买得起的量买</td></tr>
+    <tr><td>墨匣 ×1</td><td>250 金币</td><td>盲盒，开出随机金币或墨晶</td></tr>
+  </table>
+  <div class="card">
+    <strong>墨匣 7 档概率（明牌）</strong>
+    <table>
+      <tr><th>内容</th><th>概率</th><th>折合金币</th></tr>
+      <tr><td>金币 ×100</td><td>30%</td><td>100</td></tr>
+      <tr><td>金币 ×300</td><td>20%</td><td>300</td></tr>
+      <tr><td>金币 ×750</td><td>8%</td><td>750</td></tr>
+      <tr><td>墨晶 ×1</td><td>25%</td><td>25</td></tr>
+      <tr><td>墨晶 ×5</td><td>10%</td><td>125</td></tr>
+      <tr><td>墨晶 ×15</td><td>5%</td><td>375</td></tr>
+      <tr><td>墨晶 ×60（匣底沉金）</td><td>2%</td><td>1,500</td></tr>
+    </table>
+    <p style="color:var(--dim);font-size:13px;margin:6px 0 0">期望回报约 217.5 / 250 ≈ 87%。它是"花点闲钱换波动"的东西，长期开一定亏，不存在刷金币的正期望。</p>
+  </div>
+
+  <h2 id="s8"><span class="n">08</span>常见问题</h2>
+  <table>
+    <tr><th>问题</th><th>答案</th></tr>
+    <tr><td>血量归零会死吗？</td><td>不会。力竭 → 休整 120 秒 → 重组成满血。等级、货币、强化一件不少。</td></tr>
+    <tr><td>关掉电脑会丢进度吗？</td><td>不会。每 30 秒自动存档；下次启动按离线时间结算（上限 8 小时，效率 60%）。</td></tr>
+    <tr><td>它记录我打了什么字吗？</td><td>绝对不。只统计敲击次数，不取键值、不落盘内容。</td></tr>
+    <tr><td>为什么没有音效和动画？</td><td>它是常驻后台的小东西，任何动画都在吃你的电。全程序禁逐帧动画，状态一变就直接切。</td></tr>
+    <tr><td>能不能自动转生？</td><td>不做。转生是唯一一次"大决定"，必须你自己按。</td></tr>
+    <tr><td>放在哪个目录？</td><td>存档与日志在 <span class="num">%LocalAppData%\KeySpirit\</span>。</td></tr>
+  </table>
+
+  <footer>
+    键灵 v0.12 · 本页为离线静态 HTML，随程序打包。所有数值为设计草稿值，正式版前会经模拟验证调整。
+  </footer>
+</div>
+</main>
+
+<script>
+  // 单次重绘的滚动进度条（无逐帧动画）
+  var sc = document.getElementById('scroller');
+  var bar = document.getElementById('progress');
+  sc.addEventListener('scroll', function () {
+    var h = sc.scrollHeight - sc.clientHeight;
+    bar.style.width = (h > 0 ? (sc.scrollTop / h * 100) : 0) + '%';
+    updateNav();
+  }, { passive: true });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav a'));
+  var secs = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+
+  function updateNav() {
+    var idx = 0;
+    for (var i = 0; i < secs.length; i++) {
+      if (secs[i].getBoundingClientRect().top < 120) idx = i;
+    }
+    links.forEach(function (a, i) { a.className = i === idx ? 'on' : ''; });
+  }
+  links.forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      e.preventDefault();
+      var t = document.querySelector(a.getAttribute('href'));
+      sc.scrollTo({ top: t.offsetTop - 24, behavior: 'auto' });
+    });
+  });
+</script>
+</body>
+</html>
