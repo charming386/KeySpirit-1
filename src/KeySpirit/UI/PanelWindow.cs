@@ -57,6 +57,9 @@ public class PanelWindow : Window
     static readonly Brush Accent = Fz(0x4F, 0xD6, 0xE0);
     static readonly Brush Warn = Fz(0xF2, 0xA6, 0x3B);
     static readonly Brush HpFill = Fz(0x3E, 0xC1, 0x8F);
+    // 血量告急用的红。怪物血条**固定**用这个色，不随百分比变——
+    // 敌方是恒定的"消耗目标"，颜色一变反而像在提示"快打死了"，那是另一层信息。
+    static readonly Brush HpRed = Fz(0xD8, 0x45, 0x3C);
     static readonly Brush HpRest = Fz(0x6C, 0x74, 0x7E);
     static readonly Brush Track = Fz(0x2A, 0x33, 0x3D);
     static readonly Brush BtnBg = Fz(0x26, 0x30, 0x39);
@@ -84,6 +87,7 @@ public class PanelWindow : Window
     // 头部常驻文本（只改 Text）
     TextBlock? hLv, hHp, hLine3, hMoney;
     Border? hpHolder, hpFill, expHolder, expFill;
+    Border? mobHpFill;      // 「战斗详情」里的怪物血条填充（自测与渲染要读它）
     TextBlock? btnLabel;
 
     // 行登记（用于每秒刷新文本，不重建）
@@ -93,6 +97,9 @@ public class PanelWindow : Window
 
     readonly DispatcherTimer refresh;
     readonly DispatcherTimer hover;
+    readonly DispatcherTimer noteTimer;      // 悬停 1.5 秒弹注释气泡（8.4.1）
+    Row? noteRow;                            // 气泡当前挂在哪一行（同一时刻最多一条）
+    string? noteText;
     string hoverWant = "";
 
     string page = "";
@@ -183,6 +190,15 @@ public class PanelWindow : Window
             hover.Stop();
             if (hoverWant.Length == 0 || page == hoverWant) return;
             SwitchPage(hoverWant, force: true);
+        };
+
+        // 悬停注释：比展开子菜单慢得多（1.5s）。子菜单是"想要的"，注释是"看不懂才需要的"，
+        // 两者用同一个延迟会让每次划过按钮都弹一堆解释。
+        noteTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+        noteTimer.Tick += (_, _) =>
+        {
+            noteTimer.Stop();
+            ShowNoteNow();
         };
     }
 
@@ -280,6 +296,7 @@ public class PanelWindow : Window
         refresh.Start();
 
         if (Environment.GetEnvironmentVariable("KS_DBG_LAYOUT") == "1")
+        {
             foreach (var kv in mainByKey)
             {
                 try
@@ -289,12 +306,25 @@ public class PanelWindow : Window
                 }
                 catch { }
             }
+            // 子列每一行的屏幕矩形：验证注释气泡定位时要用（脚本移光标过去截图）。
+            foreach (var r in rows)
+            {
+                try
+                {
+                    var a = r.Box.PointToScreen(new Point(0, 0));
+                    var b = r.Box.PointToScreen(new Point(r.Box.ActualWidth, r.Box.ActualHeight));
+                    Log.Write($"DBG line '{r.Label.Text}' @ {a.X:0},{a.Y:0} {b.X - a.X:0}x{b.Y - a.Y:0}");
+                }
+                catch { }
+            }
+        }
     }
 
     public void HidePanel()
     {
         refresh.Stop();
         hover.Stop();
+        CancelNote();          // 气泡是独立窗口，不跟着面板一起隐藏，必须显式收
         Hide();
         page = "";
     }
@@ -665,6 +695,7 @@ public class PanelWindow : Window
         subRoot.Children.Clear();
         hLv = hHp = hLine3 = hMoney = btnLabel = null;
         hpHolder = hpFill = expHolder = expFill = null;
+        mobHpFill = null;
 
         BuildMainColumn();
 
@@ -700,6 +731,7 @@ public class PanelWindow : Window
     {
         string next = (!force && page == target) ? "" : target;
         if (next == page) return;
+        CancelNote();
         page = next;
 
         UpdateAnchorY();
@@ -720,6 +752,7 @@ public class PanelWindow : Window
         "layerInput" => "层数",          // 输入页没有独立主项，挂在「层数」名下（子列锚点也用它）
         _ => page switch
         {
+            "battle" => "战斗详情",
             "claim" => "领取",
             "layers" => "层数",
             "detail" => "角色",
@@ -735,6 +768,7 @@ public class PanelWindow : Window
     {
         // 子列内部变化（买了/强化/跳层）：只重建子列，主列控件与引用全部复用。
         // 同样不碰窗口几何：子列自己变高变矮，窗口包围盒是固定的。
+        CancelNote();          // 重建后旧行已不在树上，气泡挂在它上面会指错地方
         subRoot.Children.Clear();
         rows.Clear();
         rows.AddRange(mainRows);
@@ -835,8 +869,13 @@ public class PanelWindow : Window
 
         mainRoot.Children.Add(Divider());
 
-        // ---- 8 项 ----
-        MainItem("领取", "claim");
+        // ---- 功能项 ----
+        // 「战斗详情」放最上面：打开菜单第一眼就能看到在打什么，不用先点进二级页。
+        // 它是纯查看项（子页里没有可点的行），但和其它项一样"悬停即展开"。
+        MainItem("战斗详情", "battle");
+        // 「领取」右侧挂一个可领计数（金币袋 + 已解锁的每日礼包档），
+        // 否则每日礼包藏在子菜单里，玩家不知道有东西可拿。
+        MainItem("领取", "claim", ClaimBadge);
         MainItem("层数", "layers");
         MainItem("角色", "detail");
         MainItem("本命器", "ear");
@@ -855,9 +894,9 @@ public class PanelWindow : Window
     /// <summary>列底部留白：菜单最后一行不贴着边框。</summary>
     static Border BottomSpacer() => new() { Height = BOTTOM_PAD };
 
-    void MainItem(string key, string target)
+    void MainItem(string key, string target, Func<string>? badge = null)
     {
-        var r = RowMake(key, null, () => SwitchPage(target));
+        var r = RowMake(key, badge?.Invoke(), () => SwitchPage(target));
         mainByKey[key] = r;
         rows.Add(r);
         mainRows.Add(r);
@@ -878,7 +917,11 @@ public class PanelWindow : Window
 
         // 当前展开项保持高亮：**一次只亮一项**，亮的就是 page 对应的那个主项。
         r.Active = () => IsMainActive(target);
-        r.Tick = () => Paint(r);
+        r.Tick = () =>
+        {
+            Paint(r);
+            if (badge != null && r.Hint != null) r.Hint.Text = badge();
+        };
     }
 
     /// <summary>
@@ -896,6 +939,7 @@ public class PanelWindow : Window
     {
         switch (page)
         {
+            case "battle": subWidth = W_DETAIL; SubTitle("战斗详情"); BuildBattle(); break;
             case "claim": subWidth = W_SUB; SubTitle("领取"); BuildClaim(); break;
             case "layers": subWidth = W_SUB; SubTitle("层数"); BuildLayerMenu(); break;
             case "layerInput": subWidth = W_SUB; SubTitle("前往层数"); BuildLayerInput(); break;
@@ -922,19 +966,185 @@ public class PanelWindow : Window
 
     // ================= 子页 =================
 
+    /// <summary>主列「领取」右侧的角标：待领金币袋 + 已解锁未领的每日礼包档。</summary>
+    static string ClaimBadge()
+    {
+        var g = Game.I;
+        g.EnsureDaily();
+        int n = g.S.Bags.Count;
+        for (int i = 0; i < Game.DailyTiers.Length; i++) if (g.DailyReady(i)) n++;
+        return n > 0 ? "● " + n : "";
+    }
+
+    /// <summary>
+    /// 战斗详情：当前打的是哪一只、它是本层第几只、还剩多少血。
+    /// 纯查看页（没有任何可点的行），所以全部走 DetailRow + 一条血条；
+    /// 数值每秒随 RefreshAll 重读，换怪时名字与血条会自己跟着变。
+    /// </summary>
+    void BuildBattle()
+    {
+        // 名字 + 类型：名字大一号加粗。一层要走 10 只，换得很频繁，
+        // 只在详情里写小字会看不出"怪变了"。类型前面挂一张档位图标
+        // （小怪 / 精英 / 守层者各一张），扫一眼就知道这只值不值得看数值。
+        var head = new Grid { Height = 20, Margin = new Thickness(PAD_L, 2, PAD_R, 0) };
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var nm = Text("", FS_ITEM + 2, Fg);
+        nm.FontWeight = FontWeights.SemiBold;
+        var mi = new Image
+        {
+            Width = ICON, Height = ICON, Margin = new Thickness(0, 0, 4, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            SnapsToDevicePixels = true,
+        };
+        RenderOptions.SetBitmapScalingMode(mi, BitmapScalingMode.NearestNeighbor);
+        var ty = Text("", FS_HINT, Dim);
+        var tag = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        tag.Children.Add(mi);
+        tag.Children.Add(ty);
+        Grid.SetColumn(nm, 0);
+        Grid.SetColumn(tag, 1);
+        head.Children.Add(nm);
+        head.Children.Add(tag);
+        subRoot.Children.Add(head);
+
+        // 血条：怪物**固定红色**（见 HpRed 注释），不按百分比变色
+        var fill = new Border
+        {
+            Height = 4, CornerRadius = new CornerRadius(2),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Background = HpRed,
+        };
+        var bar = new Border
+        {
+            Height = 4, CornerRadius = new CornerRadius(2), Background = Track,
+            Margin = new Thickness(PAD_L, 5, PAD_R, 4),
+            Child = fill,
+        };
+        subRoot.Children.Add(bar);
+        mobHpFill = fill;
+
+        SectionRow("这一只");
+        DetailRow("层数", () => $"第 {Game.I.Layer} 层 · 第 {Game.I.MobNo}/10 只");
+        DetailRow("生命", () => $"{Fmt.Large(Game.I.MobHp)} / {Fmt.Large(Game.I.MobHpMax)}");
+        DetailRow("攻击", () => Fmt.Small(Game.I.MobAtkNow));
+        DetailRow("防御", () => Fmt.Small(Game.I.MobDefNow));
+
+        // 给出我方攻防，方便对照"还差多少打不动它"
+        SectionRow("我方");
+        DetailRow("攻击", () => Fmt.Small(Game.I.PlayerAtk));
+        DetailRow("防御", () => Fmt.Small(Game.I.PlayerDef));
+
+        var r = new Row
+        {
+            Box = new Border(),
+            Label = nm,
+            Tick = () =>
+            {
+                var g = Game.I;
+                nm.Text = g.MobName;
+                ty.Text = g.MobType;
+                // 换档位时换图；同一张不重复赋 Source（避免每秒重建位图）
+                var src = IconCache.Get(MobIconName(g.MobType));
+                if (!ReferenceEquals(mi.Source, src)) mi.Source = src;
+                double pct = g.MobHpMax.IsZero ? 0
+                    : Math.Clamp(g.MobHp.ToDouble() / g.MobHpMax.ToDouble(), 0, 1);
+                // 首拍还没排版（ActualWidth=0）时退化成整宽估算，下一拍自然修正
+                double full = bar.ActualWidth;
+                if (full < 1) full = W_DETAIL - INNER - PAD_L - PAD_R;
+                fill.Width = Math.Max(0, full * pct);
+            },
+        };
+        rows.Add(r);
+    }
+
+    /// <summary>怪物类型 → 图标名（Assets\mob-*.ico）。</summary>
+    static string MobIconName(string type) => type switch
+    {
+        "精英" => "mob-elite",
+        "守层者" => "mob-boss",
+        _ => "mob-minion",
+    };
+
     void BuildClaim()
     {
         var s = Game.I;
+        s.EnsureDaily();
+
+        SectionRow("每日礼包");
+        var prog = RowMake("今日敲击", DailyProgText(), null, enabled: false);
+        prog.Tick = () => { if (prog.Hint != null) prog.Hint.Text = DailyProgText(); };
+        rows.Add(prog);
+        Add(prog);
+
+        // 档位行始终可点：敲击数是实时涨的，建行那一刻没到不代表点的时候没到。
+        // 颜色由每秒 Tick 按「已领 / 可领 / 未达」重算，点击内部再判一次 DailyReady。
+        for (int i = 0; i < Game.DailyTiers.Length; i++)
+        {
+            int tier = i;
+            var r = RowMake($"{Game.DailyTiers[i]:N0} 档", DailyRewardText(i),
+                            () => { Game.I.ClaimDaily(tier); RebuildSub(); },
+                            icon: "icon-reward");
+            r.Tick = () =>
+            {
+                bool claimed = Game.I.DailyClaimed(tier);
+                bool ready = Game.I.DailyReady(tier);
+                r.Label.Text = $"{Game.DailyTiers[tier]:N0} 档";
+                r.Label.Foreground = claimed ? Dim : ready ? Fg : Disabled;
+                if (r.Hint != null)
+                {
+                    r.Hint.Text = claimed ? "已领" : DailyRewardText(tier);
+                    r.Hint.Foreground = claimed ? Dim : ready ? Accent : Disabled;
+                }
+            };
+            r.Tick();
+            rows.Add(r);
+            Add(r);
+        }
+
+        SectionRow("金币袋");
         if (s.S.Bags.Count == 0)
         {
             subRoot.Children.Add(Grey($"暂无可领金币袋·每 {Game.BagKeys} 次敲击掉一袋"));
-            return;
         }
-        var r = RowMake($"金币袋 ×{s.S.Bags.Count}", $"+{Fmt.Large(s.BagSum)}",
-            () => { s.ClaimBags(); RebuildSub(); });
-        Add(r);
-        Add(RowMake("一键全领", null, () => { s.ClaimBags(); RebuildSub(); }));
+        else
+        {
+            var r = RowMake($"金币袋 ×{s.S.Bags.Count}", $"+{Fmt.Large(s.BagSum)}",
+                () => { s.ClaimBags(); RebuildSub(); });
+            Add(r);
+        }
+        Add(RowMake("一键全领", null, () => { s.ClaimAll(); RebuildSub(); }));
     }
+
+    /// <summary>今日敲击行的右侧进度：显示「到下一个还没领的档」的进度，全领完显示已领。</summary>
+    /// <summary>
+    /// 「今日敲击」右侧那行。三种状态，顺序不能反：
+    ///   · 有已达标的档还没领 → 「21,360 · 可领 2 档」
+    ///   · 没有可领的、但有档还没到 → 「6,000 / 20,000」（下一档门槛）
+    ///   · 全部领完 → 「21,360 · 已全领」
+    /// 旧写法只判「未领且未达标」，两档都达标却都没领时会漏到最后一档，显示成「已全领」——
+    /// 明明下面两行都可以点。
+    /// </summary>
+    static string DailyProgText()
+    {
+        var g = Game.I;
+        g.EnsureDaily();
+
+        int ready = 0, next = -1;
+        for (int i = 0; i < Game.DailyTiers.Length; i++)
+        {
+            if (g.DailyClaimed(i)) continue;
+            if (g.S.DailyKeys >= Game.DailyTiers[i]) ready++;
+            else if (next < 0) next = i;
+        }
+
+        if (ready > 0) return $"{g.S.DailyKeys:N0} · 可领 {ready} 档";
+        if (next >= 0) return $"{g.S.DailyKeys:N0} / {Game.DailyTiers[next]:N0}";
+        return $"{g.S.DailyKeys:N0} · 已全领";
+    }
+
+    static string DailyRewardText(int tier)
+        => $"+{Fmt.Large(Game.I.DailyGold(tier))} · 墨晶 {Game.I.DailyInk(tier)}";
 
     void BuildLayerMenu()
     {
@@ -994,6 +1204,15 @@ public class PanelWindow : Window
     static readonly string[] EarNames = { "墨刃", "墨衣", "墨眸", "墨印" };
     static readonly string[] EarIcons = { "ear-blade", "ear-robe", "ear-eye", "ear-seal" };
 
+    /// <summary>四件本命器的注释（悬停 1.5 秒出），每个写清"加什么属性、为什么值得升"。</summary>
+    static readonly string[] EarNotes =
+    {
+        "每级 ×1.06 攻击（叠乘）。攻击决定每回合能打掉多少血",
+        "每级 ×1.06 生命。生命归零会力竭休整，休整期间不战斗",
+        "每级 +0.15% 暴击率，60% 封顶；超出部分转成暴伤",
+        "每级 ×1.06 防御。层数越高怪物攻击越狠，主要靠它扛",
+    };
+
     void BuildEar()
     {
         // 单次强化次数档（点击轮换 1 → 10 → 50 → 100 → max）；空图标名 = 只占位保持左对齐
@@ -1001,7 +1220,7 @@ public class PanelWindow : Window
         {
             Game.I.S.EnhBatch = NextBatch(Game.I.S.EnhBatch);
             RebuildSub();
-        }, icon: "");
+        }, icon: "", note: "点一下换一个档位：×1 / ×10 / ×50 / ×100 / max。max 按当前墨晶能升多少升多少");
         batch.Tick = () => batch.Label.Text = $"单次升级 {BatchText(Game.I.S.EnhBatch)}";
         rows.Add(batch);
         Add(batch);
@@ -1017,7 +1236,7 @@ public class PanelWindow : Window
                     if (AffordableCount(idx) > 0) Game.I.EnhanceByBatch(idx);
                     RebuildSub();               // 点了但墨晶不够：重建后自然变成置灰 + 墨晶不足
                 },
-                enabled: k > 0, icon: EarIcons[i]);
+                enabled: k > 0, icon: EarIcons[i], note: EarNotes[i]);
             r.Tick = () =>
             {
                 int L = Game.I.EnhLevel(idx);
@@ -1032,8 +1251,8 @@ public class PanelWindow : Window
             };
             Add(r);
 
-            var eff = RowMake(EffectText(idx, lv), null, null, enabled: false, small: true);
-            eff.Tick = () => eff.Label.Text = EffectText(idx, Game.I.EnhLevel(idx));
+            var eff = RowMake(EffectText(idx, lv, k), null, null, enabled: false, small: true);
+            eff.Tick = () => eff.Label.Text = EffectText(idx, Game.I.EnhLevel(idx), AffordableCount(idx));
             rows.Add(eff);
             Add(eff);
         }
@@ -1077,17 +1296,46 @@ public class PanelWindow : Window
         return cap > 0 ? $"墨晶不足 · 够×{cap}" : "墨晶不足";
     }
 
-    static string EffectText(int idx, int lv) => idx switch
+    /// <summary>
+    /// 属性预览行。**必须跟着次数档走**：×100 的时候要显示"升 100 级之后到哪"，
+    /// 而不是永远显示涨一级的样子（旧版就是这么错的，玩家会以为档位没生效）。
+    /// gain = 当前档位实际能升的级数；为 0（墨晶不够 / 已满级）时只显示当前值。
+    /// </summary>
+    static string EffectText(int idx, int lv, int gain)
     {
-        0 => $"　　攻击 {Fmt.Small(Big.Pow(1.06, lv) * 10)} → {Fmt.Small(Big.Pow(1.06, lv + 1) * 10)}",
-        1 => $"　　生命 {Fmt.Small(Big.Pow(1.06, lv) * 80)} → {Fmt.Small(Big.Pow(1.06, lv + 1) * 80)}",
-        2 => $"　　暴击 {Fmt.Pct(0.02 + 0.0015 * lv, 2)} → {Fmt.Pct(0.02 + 0.0015 * (lv + 1), 2)}",
-        _ => $"　　防御 {Fmt.Small(Big.Pow(1.06, lv) * 4)} → {Fmt.Small(Big.Pow(1.06, lv + 1) * 4)}",
-    };
+        int to = lv + Math.Max(0, gain);
+        bool preview = gain > 0;
+        return idx switch
+        {
+            0 => preview
+                ? $"　　攻击 {Fmt.Small(Big.Pow(1.06, lv) * 10)} → {Fmt.Small(Big.Pow(1.06, to) * 10)}"
+                : $"　　攻击 {Fmt.Small(Big.Pow(1.06, lv) * 10)}",
+            1 => preview
+                ? $"　　生命 {Fmt.Small(Big.Pow(1.06, lv) * 80)} → {Fmt.Small(Big.Pow(1.06, to) * 80)}"
+                : $"　　生命 {Fmt.Small(Big.Pow(1.06, lv) * 80)}",
+            2 => preview
+                ? $"　　暴击 {Fmt.Pct(0.02 + 0.0015 * lv, 2)} → {Fmt.Pct(0.02 + 0.0015 * to, 2)}"
+                : $"　　暴击 {Fmt.Pct(0.02 + 0.0015 * lv, 2)}",
+            _ => preview
+                ? $"　　防御 {Fmt.Small(Big.Pow(1.06, lv) * 4)} → {Fmt.Small(Big.Pow(1.06, to) * 4)}"
+                : $"　　防御 {Fmt.Small(Big.Pow(1.06, lv) * 4)}",
+        };
+    }
 
     void BuildShop()
     {
         var s = Game.I;
+
+        // 数量档：1 → 10 → 100 → 1K → 1M → 1B → max（点一下轮换，跟本命器的次数档同一套交互）
+        var batch = RowMake($"单次数量 {ShopBatchText(s.S.ShopBatch)}", "点击切换", () =>
+        {
+            Game.I.S.ShopBatch = NextShopBatch(Game.I.S.ShopBatch);
+            RebuildSub();
+        }, icon: "");
+        batch.Tick = () => batch.Label.Text = $"单次数量 {ShopBatchText(Game.I.S.ShopBatch)}";
+        rows.Add(batch);
+        Add(batch);
+
         var info = RowMake($"墨晶 {Fmt.Large(s.Ink)} 颗", $"{Fmt.Large(s.Gold)} 金币", null, enabled: false);
         info.Tick = () =>
         {
@@ -1097,20 +1345,80 @@ public class PanelWindow : Window
         rows.Add(info);
         Add(info);
 
-        Add(RowMake("买墨晶 ×1", $"{Game.InkPrice} 金币", () => { Game.I.BuyInk(1); RebuildSub(); },
-            enabled: s.Gold.CompareTo(Big.Of(Game.InkPrice)) >= 0, icon: "cur-inkcrystal"));
-        Add(RowMake("买墨晶 ×10", $"{Game.InkPrice * 10} 金币", () => { Game.I.BuyInk(10); RebuildSub(); },
-            enabled: s.Gold.CompareTo(Big.Of(Game.InkPrice * 10)) >= 0, icon: ""));
+        int inkN = ShopCount(Game.InkPrice);
+        var inkCost = Big.Of((double)Game.InkPrice * inkN);
+        // 行始终可点：金币是每秒涨的，「建行时买不起」不代表点下去时买不起。
+        // 买不起时由 Tick 把文字置灰、提示写「金币不足」，点下去也只是空操作（BuyInk 自己会拦住）。
+        var buy = RowMake($"买墨晶 ×{ShopBatchText(inkN)}", $"{Fmt.Large(inkCost)} 金币",
+            () => { Game.I.BuyInk(ShopCount(Game.InkPrice)); RebuildSub(); },
+            enabled: true, icon: "cur-inkcrystal");
+        buy.Tick = () =>
+        {
+            int n = ShopCount(Game.InkPrice);
+            var cost = Big.Of((double)Game.InkPrice * n);
+            bool ok = Game.I.Gold.CompareTo(cost) >= 0;
+            buy.Label.Text = $"买墨晶 ×{ShopBatchText(n)}";
+            buy.Label.Foreground = ok ? Fg : Disabled;
+            if (buy.Hint != null)
+            {
+                buy.Hint.Text = ok ? $"{Fmt.Large(cost)} 金币" : "金币不足";
+                buy.Hint.Foreground = ok ? Dim : Warn;
+            }
+        };
+        rows.Add(buy);
+        Add(buy);
 
         int shortfall = s.InkShortfall(0);
         Add(RowMake("补到够升墨刃",
             shortfall > 0 ? $"差 {shortfall} 颗 · {shortfall * Game.InkPrice} 金币" : "已够",
             () => { Game.I.FillToNext(0); RebuildSub(); }, enabled: shortfall > 0, icon: ""));
 
-        Add(RowMake("开墨匣 ×1", "250 金币", () => { Game.I.OpenBox(1); RebuildSub(); },
-            enabled: s.Gold.CompareTo(Big.Of(250)) >= 0, icon: "box-ink"));
-        Add(RowMake("开墨匣 ×10", "2,500 金币", () => { Game.I.OpenBox(10); RebuildSub(); },
-            enabled: s.Gold.CompareTo(Big.Of(2500)) >= 0, icon: ""));
+        int boxN = ShopCount(250);
+        var boxCost = Big.Of(250.0 * boxN);
+        var open = RowMake($"开墨匣 ×{ShopBatchText(boxN)}", $"{Fmt.Large(boxCost)} 金币",
+            () => { Game.I.OpenBox(ShopCount(250)); RebuildSub(); },
+            enabled: true, icon: "box-ink");
+        open.Tick = () =>
+        {
+            int n = ShopCount(250);
+            var cost = Big.Of(250.0 * n);
+            bool ok = Game.I.Gold.CompareTo(cost) >= 0;
+            open.Label.Text = $"开墨匣 ×{ShopBatchText(n)}";
+            open.Label.Foreground = ok ? Fg : Disabled;
+            if (open.Hint != null)
+            {
+                open.Hint.Text = ok ? $"{Fmt.Large(cost)} 金币" : "金币不足";
+                open.Hint.Foreground = ok ? Dim : Warn;
+            }
+        };
+        rows.Add(open);
+        Add(open);
+    }
+
+    /// <summary>当前档位下这一项买多少：正数照用；max(-1) = 金币买得起的最大数量。</summary>
+    static int ShopCount(int unitPrice)
+    {
+        var s = Game.I;
+        int b = s.S.ShopBatch;
+        if (b > 0) return b;
+        double afford = Math.Floor(s.Gold.ToDouble() / unitPrice);
+        if (afford < 1) return 1;
+        return (int)Math.Min(afford, 1000000000);      // 封顶 10 亿，避免超大数把 int 撑爆
+    }
+
+    static int NextShopBatch(int b) => b switch
+    {
+        1 => 10, 10 => 100, 100 => 1000, 1000 => 1000000,
+        1000000 => 1000000000, 1000000000 => -1, _ => 1,
+    };
+
+    static string ShopBatchText(int b)
+    {
+        if (b < 0) return "max";
+        if (b >= 1000000000) return b % 1000000000 == 0 ? (b / 1000000000) + "B" : Fmt.Large(Big.Of(b));
+        if (b >= 1000000) return b % 1000000 == 0 ? (b / 1000000) + "M" : Fmt.Large(Big.Of(b));
+        if (b >= 1000) return b % 1000 == 0 ? (b / 1000) + "K" : Fmt.Large(Big.Of(b));
+        return b.ToString();
     }
 
     void BuildSettings()
@@ -1119,18 +1427,21 @@ public class PanelWindow : Window
         Add(RowMake("打开教程", "HTML", () => { HidePanel(); TutorialWindow.Open(); }));
 
         Add(RowMake($"敲击监听 [{(s.S.ListenKeys ? "开" : "关")}]", null,
-            () => { Game.I.S.ListenKeys = !Game.I.S.ListenKeys; RebuildSub(); }));
+            () => { Game.I.S.ListenKeys = !Game.I.S.ListenKeys; RebuildSub(); },
+            note: "统计键盘敲击次数，每 300 次掉一个金币袋。只记次数，不记录按了什么键"));
 
         Add(RowMake($"自动回退 [{(s.S.AutoRetreat ? "开" : "关")}]", null,
-            () => { Game.I.S.AutoRetreat = !Game.I.S.AutoRetreat; RebuildSub(); }));
+            () => { Game.I.S.AutoRetreat = !Game.I.S.AutoRetreat; RebuildSub(); },
+            note: "打不过当前层时自动退回上一层。关掉就一直卡在这只怪身上反复送"));
 
         Add(RowMake($"战斗速度（{s.S.BattleSeconds}s）", "点击切换", () =>
         {
             Game.I.S.BattleSeconds = Game.I.S.BattleSeconds switch { 1 => 2, 2 => 3, 3 => 5, _ => 1 };
             RebuildSub();
-        }));
+        }, note: "每只怪结算一次的间隔。调快只省时间，收益按同一套公式算"));
 
-        Add(RowMake("手动存档", null, () => { Game.I.Save(); Flash("已保存"); }));
+        Add(RowMake("手动存档", null, () => { Game.I.Save(); Flash("已保存"); },
+            note: "立刻写盘。平时每 30 秒自动存一次，退出时也会存"));
         Add(RowMake("打开存档目录", null, () =>
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Game.Dir) { UseShellExecute = true }); }
@@ -1167,7 +1478,9 @@ public class PanelWindow : Window
                 if ((DateTime.UtcNow - rebirthClickAt).TotalSeconds >= 10) { rebirthClickAt = DateTime.UtcNow; RebuildSub(); return; }
                 Game.I.Rebirth();
                 RebuildSub();
-            }, enabled: s.CanRebirth, warn: true);
+            }, enabled: s.CanRebirth, warn: true,
+               note: "重置层数与等级（回第 1 层 Lv1），本命器强化、金币、墨晶全部保留；"
+                   + "按本轮最高层换墨根，每点 +6% 全属性");
             rb.Tick = () =>
             {
                 int gain = Game.I.RebirthGain;
@@ -1181,6 +1494,13 @@ public class PanelWindow : Window
 
         SectionRow("统计");
         DetailRow("累计敲击", () => Game.I.S.TotalKeys.ToString("N0"));
+        DetailRow("今日敲击", () => $"{Game.I.S.DailyKeys:N0} / {Game.DailyTiers[^1]:N0}");
+        DetailRow("今日礼包", () =>
+        {
+            int done = 0;
+            for (int i = 0; i < Game.DailyTiers.Length; i++) if (Game.I.DailyClaimed(i)) done++;
+            return $"{done} / {Game.DailyTiers.Length} 档已领";
+        });
         DetailRow("累计击杀", () => Game.I.S.TotalKills.ToString("N0"));
         DetailRow("累计在线", () => $"{Game.I.S.PlaySeconds / 3600:0.0} 小时");
         DetailRow("转生次数", () => Game.I.S.Rebirths.ToString());
@@ -1204,6 +1524,8 @@ public class PanelWindow : Window
         public bool Hovered;
         /// <summary>这一项是不是"当前打开的那一页"。只有一项会返回 true。</summary>
         public Func<bool>? Active;
+        /// <summary>停满 1.5 秒弹出的注释；null 表示这一行不解释。</summary>
+        public string? Note;
     }
 
     /// <summary>
@@ -1219,7 +1541,7 @@ public class PanelWindow : Window
     }
 
     Row RowMake(string text, string? hint, Action? click, bool enabled = true, bool warn = false,
-                string? icon = null, bool small = false)
+                string? icon = null, bool small = false, string? note = null)
     {
         var grid = new Grid { Height = small ? ITEM_H_SM : ITEM_H };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1273,7 +1595,90 @@ public class PanelWindow : Window
             box.MouseLeave += (_, _) => { row.Hovered = false; Paint(row); };
             box.MouseLeftButtonUp += (_, _) => click();
         }
+
+        // 注释气泡与"能不能点"解耦：置灰的行（墨晶不足 / 层数不够转生）反而更需要解释，
+        // 所以只要给了 note 就挂悬停，不看 enabled。
+        if (note != null)
+        {
+            row.Note = note;
+            box.MouseEnter += (_, _) => BeginNote(row, note);
+            box.MouseLeave += (_, _) => EndNote(row);
+        }
+
         return row;
+    }
+
+    // ================= 注释气泡（8.4.1）=================
+
+    /// <summary>鼠标停在这一行上：重新计时。划过不弹、停满 1.5 秒才弹。</summary>
+    void BeginNote(Row r, string text)
+    {
+        noteRow = r;
+        noteText = text;
+        noteTimer.Stop();
+        noteTimer.Start();
+    }
+
+    void EndNote(Row r)
+    {
+        if (!ReferenceEquals(noteRow, r)) return;
+        CancelNote();
+    }
+
+    /// <summary>收起气泡并清掉待弹状态。切页、重建子列、关面板都要调，否则会挂在旧行上。</summary>
+    void CancelNote()
+    {
+        noteTimer.Stop();
+        NoteWindow.HideNote();
+        noteRow = null;
+        noteText = null;
+    }
+
+    void ShowNoteNow()
+    {
+        if (noteRow == null || noteText == null || !IsVisible) { CancelNote(); return; }
+
+        var box = noteRow.Box;
+        if (!box.IsVisible || box.ActualWidth <= 0) { CancelNote(); return; }
+
+        // PointToScreen 给的是物理像素，窗口 Left/Top 与 WorkArea 都是 DIP，这里先换算再定位。
+        var (sx, sy) = Scale();
+        if (sx <= 0 || sy <= 0) { sx = sy = 1; }
+        var p1 = box.PointToScreen(new Point(0, 0));
+        var p2 = box.PointToScreen(new Point(box.ActualWidth, box.ActualHeight));
+
+        NoteWindow.ShowNote(noteText, new Rect(
+            p1.X / sx, p1.Y / sy,
+            Math.Max(0, (p2.X - p1.X) / sx), Math.Max(0, (p2.Y - p1.Y) / sy)));
+    }
+
+    /// <summary>
+    /// 出图工具用：某一行相对面板左上角的位置。发布配图要把气泡画到真实位置，
+    /// 而气泡是独立窗口拍不到，只能拿到行坐标后合成。
+    /// </summary>
+    internal Rect RowRectInRoot(string keyword)
+    {
+        if (Content is not FrameworkElement root) return Rect.Empty;
+        foreach (var r in rows)
+        {
+            // rows 里有不参与显示的计时行（只有 Tick，没有 Label），必须做空判断。
+            if (r.Label?.Text?.Contains(keyword) != true) continue;
+            try
+            {
+                var p = r.Box.TranslatePoint(new Point(0, 0), root);
+                return new Rect(p.X, p.Y, r.Box.ActualWidth, r.Box.ActualHeight);
+            }
+            catch { }
+        }
+        return Rect.Empty;
+    }
+
+    /// <summary>出图工具用：某一行的注释原文，保证配图里的文案与代码里的完全一致。</summary>
+    internal string? RowNoteOf(string keyword)
+    {
+        foreach (var r in rows)
+            if (r.Label?.Text?.Contains(keyword) == true) return r.Note;
+        return null;
     }
 
     void Add(Row r)
@@ -1378,7 +1783,11 @@ public class PanelWindow : Window
             double full = hpHolder.ActualWidth;
             if (full < 1) full = W_MAIN - INNER - PAD_L - PAD_R - 62;
             hpFill.Width = Math.Max(0, full * pct);
-            hpFill.Background = s.Resting ? HpRest : pct < 0.3 ? Warn : HpFill;
+            // 三档：满/过半绿 → 低于 60% 橘 → 低于 20% 红（休整时一律灰，表示"不是战斗中"）
+            hpFill.Background = s.Resting ? HpRest
+                : pct < 0.2 ? HpRed
+                : pct < 0.6 ? Warn
+                : HpFill;
         }
 
         if (hLine3 != null)

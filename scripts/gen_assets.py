@@ -291,7 +291,93 @@ def icon_box():
     return g
 
 
+# ---- 怪物档位图标：小怪 / 精英 / 守层者 -----------------------------------
+# 三只共用"墨滴"剪影（和主角同族），靠体型、角与冠、眼色区分。
+# 面板里只有 14px，深色底上缩到 14px 时细节会糊成噪点，所以：
+#   * 只用少而大的块面；
+#   * 剪影两侧都描亮边（不是只描左侧），否则整只糊进背景；
+#   * 档位色只用在"眼/角/冠"这一处，剩下的靠体型区分。
+BRIGHT_RED = (236, 96, 88, 255)
+MBODY = (46, 62, 80, 255)
+MRIM = (96, 158, 184, 255)
+MSHADE = (26, 34, 46, 255)
+
+
+def mob_body(g, prof, y0):
+    """按半宽表画一条墨滴：两侧亮边 + 底部一行暗边（落地感）。"""
+    for i, hw in enumerate(prof):
+        y = y0 + i
+        rect(g, 16 - hw, y, 16 + hw - 1, y, MBODY)
+        put(g, 16 - hw, y, MRIM)
+        put(g, 16 + hw - 1, y, MRIM)
+    y = y0 + len(prof)
+    hw = prof[-1]
+    hline(g, 16 - hw, 16 + hw - 1, y, MSHADE)
+
+
+def mob_minion():
+    """小怪：矮小的一团墨，青色眼睛，没有角。"""
+    g = blank()
+    mob_body(g, [4, 5, 6, 6, 6, 6, 6, 5, 4, 3], 11)
+    # 双眼（2x2，留 2px 内缩，避免贴边）
+    rect(g, 12, 14, 13, 15, CYAN)
+    rect(g, 18, 14, 19, 15, CYAN)
+    put(g, 12, 14, CYAN_L)
+    put(g, 18, 14, CYAN_L)
+    # 两只小脚 + 一滴尾巴，避免看起来只是个圆点
+    rect(g, 11, 21, 13, 21, MBODY)
+    rect(g, 18, 21, 20, 21, MBODY)
+    put(g, 16, 22, CYAN_D)
+    return g
+
+
+def mob_elite():
+    """精英：比小怪高一头，一对琥珀角、琥珀眼。"""
+    g = blank()
+    mob_body(g, [4, 5, 6, 7, 8, 8, 8, 8, 8, 7, 6, 5, 4, 3], 11)
+    # 角：3x4 的粗块，缩到 14px 才不会被采样吃掉
+    rect(g, 8, 7, 10, 10, AMB)
+    put(g, 8, 6, GOLD)
+    rect(g, 21, 7, 23, 10, AMB)
+    put(g, 23, 6, GOLD)
+    # 眼
+    rect(g, 11, 16, 13, 17, AMB)
+    rect(g, 18, 16, 20, 17, AMB)
+    put(g, 11, 16, GOLD)
+    put(g, 18, 16, GOLD)
+    # 尖牙
+    put(g, 15, 21, GOLD_D)
+    put(g, 16, 21, GOLD_D)
+    return g
+
+
+def mob_boss():
+    """守层者：最高最宽，三尖墨冠、赤目。"""
+    g = blank()
+    mob_body(g, [5, 7, 8, 9, 9, 9, 9, 9, 9, 8, 7, 6, 5, 4], 12)
+    # 三尖冠
+    rect(g, 8, 8, 9, 11, CRIM)
+    put(g, 8, 7, CRIM)
+    rect(g, 15, 5, 17, 11, CRIM)
+    put(g, 16, 4, GOLD)
+    rect(g, 22, 8, 23, 11, CRIM)
+    put(g, 23, 7, CRIM)
+    hline(g, 8, 23, 11, CRIM_D)
+    # 赤目
+    rect(g, 11, 16, 13, 17, BRIGHT_RED)
+    rect(g, 18, 16, 20, 17, BRIGHT_RED)
+    put(g, 11, 16, GOLD)
+    put(g, 18, 16, GOLD)
+    # 下摆尖刺
+    put(g, 11, 26, MBODY)
+    put(g, 20, 26, MBODY)
+    return g
+
+
 ICONS = {
+    "mob-minion": mob_minion,
+    "mob-elite": mob_elite,
+    "mob-boss": mob_boss,
     "icon-base": sprite_base,
     "icon-reward": sprite_reward,
     "icon-rest": sprite_rest,

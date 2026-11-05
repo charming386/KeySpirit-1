@@ -16,7 +16,14 @@ public static class Program
         // 单实例：第二个进程直接退出，不弹任何提示。
         // --selftest 用独立互斥名，游戏正开着时也能跑自测（否则会误读到上一次的结果文件）。
         bool selfTest = Array.Exists(Environment.GetCommandLineArgs(), a => a == "--selftest");
-        using var mutex = new Mutex(true, selfTest ? @"Global\KeySpirit_SelfTest" : @"Global\KeySpirit_SingleInstance", out bool created);
+        // 发布配图：--shot <目录>，同样用独立互斥名，游戏开着也能出图（见 Shot.cs）。
+        var argv = Environment.GetCommandLineArgs();
+        int shotAt = Array.IndexOf(argv, "--shot");
+        bool shot = shotAt >= 0 && shotAt + 1 < argv.Length;
+        string mutexName = selfTest ? @"Global\KeySpirit_SelfTest"
+                         : shot ? @"Global\KeySpirit_Shot"
+                         : @"Global\KeySpirit_SingleInstance";
+        using var mutex = new Mutex(true, mutexName, out bool created);
         if (!created) return;
 
         // 本机 GPU 渲染路径异常（空 WPF 窗口硬件渲染吃掉 690MB），强制软件渲染后只占 ~100MB。
@@ -33,6 +40,12 @@ public static class Program
         if (Array.Exists(Environment.GetCommandLineArgs(), a => a == "--selftest"))
         {
             SelfTest.Run();
+            return;
+        }
+
+        if (shot)
+        {
+            Shot.Run(argv[shotAt + 1]);
             return;
         }
 

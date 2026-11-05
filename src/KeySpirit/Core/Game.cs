@@ -26,6 +26,9 @@ public class SaveDto
     public int EnhSeal { get; set; }
     public List<double[]> Bags { get; set; } = new();   // [mantissa, exp]
     public long TotalKeys { get; set; }
+    public long DailyKeys { get; set; }                          // 今日敲击（本地日切重置）
+    public string DailyDate { get; set; } = "";                  // 上面这个数属于哪一天，yyyy-MM-dd
+    public int DailyMask { get; set; }                           // 每日礼包领没领：bit0 = 5,000 档，bit1 = 20,000 档
     public long TotalKills { get; set; }
     public int Rebirths { get; set; }
     public long BoxesOpened { get; set; }
@@ -37,6 +40,7 @@ public class SaveDto
     public bool LockLayer { get; set; }
     public int BattleSeconds { get; set; } = 2;
     public int EnhBatch { get; set; } = 1;      // 单次强化次数：1/10/50/100，-1 = max
+    public int ShopBatch { get; set; } = 1;     // 商店单次数量：1/10/100/1K/1M/1B，-1 = max
     public DateTime LastSaveUtc { get; set; } = DateTime.UtcNow;
 }
 
@@ -77,6 +81,78 @@ public class Game
     public static Big MobDef(int n) => Big.Clamp(Big.Pow(1.03, n - 1) * (2 * MoChao(n)));
     public static Big MobGold(int n) => Big.Clamp(Big.Pow(1.06, n - 1) * (5 * MoChao(n)));
     public static Big MobExp(int n) => Big.Clamp(Big.Pow(1.05, n - 1) * (12 * MoChao(n)));
+
+    /// <summary>
+    /// 怪物种类（3.4）。倍率乘在本层基准值上，**同池均值恰好 = 1.000**，
+    /// 所以加这套表不会改变推层速度与整体数值曲线，只是让单只有胖瘦快慢之分。
+    /// 名字是物种不是人，和「墨渊/墨晶/守层者」这套世界观对齐。
+    /// </summary>
+    public readonly record struct MobKind(string Name, string Type, double HpMul, double AtkMul, double DefMul);
+
+    /// <summary>小怪 10 种：hp / atk / def 三列各自求和都是 10.00。</summary>
+    static readonly MobKind[] Minions =
+    {
+        new("墨蛛",   "小怪", 0.95, 1.04, 0.95),   // 结网猎手，脆而快
+        new("砚龟",   "小怪", 1.10, 0.88, 1.15),   // 背甲是凝固的墨块
+        new("纸魅",   "小怪", 0.92, 1.06, 0.92),   // 从废稿里爬出的薄影
+        new("笔魈",   "小怪", 1.00, 1.02, 0.98),   // 断笔成精，善刺
+        new("墨蚊",   "小怪", 0.90, 1.08, 0.90),   // 吸食墨气的小虫
+        new("字蠹",   "小怪", 1.02, 0.96, 1.08),   // 蛀食经卷文字的蠹虫
+        new("灰蛾",   "小怪", 0.96, 1.00, 0.96),   // 扑向灯焰的灰翼虫
+        new("池蛭",   "小怪", 1.04, 0.98, 1.02),   // 墨池底部的吸血虫
+        new("残页魇", "小怪", 1.06, 0.94, 1.06),   // 缺页残卷里凝成的梦魇
+        new("拓影犬", "小怪", 1.05, 1.04, 0.98),   // 从拓印上走下来的影子犬
+    };
+
+    /// <summary>精英 5 种：层内第 5 只。三列同样各自求和 5.00。</summary>
+    static readonly MobKind[] Elites =
+    {
+        new("镇纸兽", "精英", 1.10, 0.94, 1.10),   // 压纸的重甲兽，硬而迟
+        new("朱砂魈", "精英", 0.96, 1.08, 0.94),   // 朱砂点睛，赤目好斗
+        new("墨甲卒", "精英", 1.04, 1.00, 1.06),   // 披墨甲的无面守卒
+        new("断锋螳", "精英", 0.94, 1.08, 0.94),   // 以断笔为镰的刀客
+        new("碑蠹王", "精英", 0.96, 0.90, 0.96),   // 啃穿石碑的虫王
+    };
+
+    /// <summary>守层者 3 种：层内第 10 只。三列各自求和 3.00。</summary>
+    static readonly MobKind[] Keepers =
+    {
+        new("渊墨巨魇", "守层者", 1.04, 1.04, 0.98),   // 墨渊深处聚合的魇体
+        new("无字碑灵", "守层者", 0.96, 1.00, 1.06),   // 空白碑文里醒来的守碑之灵
+        new("千钧砚主", "守层者", 1.00, 0.96, 0.96),   // 一方悬空巨砚，碾一切字迹
+    };
+
+    /// <summary>
+    /// 取本层第 index 只怪的种类。**必须是纯函数**：面板每秒刷新一次，
+    /// 若带随机，同一只怪的名字会在屏幕上乱跳。用 (层, 序号) 做哈希取模即可，
+    /// 同一层同一只永远同一个物种，换层则重新洗牌。
+    /// </summary>
+    public static MobKind MobKindAt(int layer, int index)
+    {
+        if (index >= 10) return Keepers[Pick(layer, 10, Keepers.Length)];
+        if (index == 5) return Elites[Pick(layer, 5, Elites.Length)];
+        return Minions[Pick(layer, index, Minions.Length)];
+    }
+
+    static int Pick(int layer, int index, int mod)
+    {
+        unchecked
+        {
+            uint h = (uint)layer * 73856093u ^ (uint)index * 19349663u;
+            h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+            return (int)(h % (uint)mod);
+        }
+    }
+
+    /// <summary>当前正在打的那一只。</summary>
+    [JsonIgnore] public MobKind Mob => MobKindAt(S.Layer, MobIndex);
+    [JsonIgnore] public string MobName => Mob.Name;
+    [JsonIgnore] public string MobType => Mob.Type;
+    /// <summary>本层第几只是它（1~10）。</summary>
+    [JsonIgnore] public int MobNo => MobIndex;
+    /// <summary>怪物实际的攻防（已乘种类倍率）——战斗用它，界面也用它，两处必须同一个来源。</summary>
+    [JsonIgnore] public Big MobAtkNow => Big.Clamp(MobAtk(S.Layer) * Mob.AtkMul);
+    [JsonIgnore] public Big MobDefNow => Big.Clamp(MobDef(S.Layer) * Mob.DefMul);
 
     public Big PlayerAtk => CalcAtk();
     public Big PlayerDef => CalcDef();
@@ -123,11 +199,12 @@ public class Game
     void SpawnMob()
     {
         int n = S.Layer;
-        var hp = MobHpOf(n);
-        if (MobIndex == 5) hp = Big.Clamp(hp * 1.6);
-        else if (MobIndex == 10) hp = Big.Clamp(hp * 2.5);
-        MobHpMax = hp;
-        MobHp = hp;
+        // 基准值 × 种类倍率（同一层内 10 只均值 = 基准，故总体曲线不变）
+        var hp = MobHpOf(n) * MobKindAt(n, MobIndex).HpMul;
+        if (MobIndex == 5) hp = hp * 1.6;
+        else if (MobIndex == 10) hp = hp * 2.5;
+        MobHpMax = Big.Clamp(hp);
+        MobHp = MobHpMax;
     }
 
     public void ResetFight()
@@ -142,6 +219,7 @@ public class Game
     // ---- 主循环 ----
     public void Tick(TimeSpan dt)
     {
+        EnsureDaily();   // 跨零点时窗口一直开着也要自己翻页，不能等重启
         if (S.Paused) { Status = "暂停"; return; }
 
         if (Resting)
@@ -174,7 +252,7 @@ public class Game
     {
         // 玩家先手
         var atk = PlayerAtk;
-        var dmg = atk - MobDef(S.Layer) * 0.5;
+        var dmg = atk - MobDefNow * 0.5;
         if (dmg.CompareTo(Big.Zero) < 0) dmg = Big.Of(1);
         bool crit = Rng.NextDouble() < CritRate;
         if (crit) dmg = dmg * (1 + CritDmg);
@@ -186,7 +264,7 @@ public class Game
         }
 
         // 怪物反击
-        var taken = MobAtk(S.Layer) - PlayerDef * 0.5;
+        var taken = MobAtkNow - PlayerDef * 0.5;
         if (taken.CompareTo(Big.Of(1)) < 0) taken = Big.Of(1);
         Hp = Hp - taken;
         if (Hp.CompareTo(Big.Zero) <= 0) Exhaust();
@@ -276,11 +354,82 @@ public class Game
     /// <summary>掉落一袋所需敲击数（第七章：300 键 = 1 袋）。</summary>
     public const int BagKeys = 300;
 
+    // ---- 每日敲击（4.x / 7.x）----
+    /// <summary>每日礼包档位。索引即 <see cref="SaveDto.DailyMask"/> 的位序。</summary>
+    public static readonly int[] DailyTiers = { 5000, 20000 };
+
+    /// <summary>
+    /// 日切。**本地日期**变了就把今日敲击与领取标记清空。
+    /// 三个入口都要调：主循环（跨零点时窗口开着）、敲击回调（暂停时 Tick 不跑）、读档后。
+    /// </summary>
+    public void EnsureDaily()
+    {
+        string today = DateTime.Now.ToString("yyyy-MM-dd");
+        if (S.DailyDate == today) return;
+        S.DailyDate = today;
+        S.DailyKeys = 0;
+        S.DailyMask = 0;
+    }
+
+    /// <summary>该档位是否已达门槛且未领。</summary>
+    public bool DailyReady(int tier)
+    {
+        EnsureDaily();
+        if (tier < 0 || tier >= DailyTiers.Length) return false;
+        return S.DailyKeys >= DailyTiers[tier] && (S.DailyMask & (1 << tier)) == 0;
+    }
+
+    public bool DailyClaimed(int tier)
+        => tier >= 0 && tier < DailyTiers.Length && (S.DailyMask & (1 << tier)) != 0;
+
+    /// <summary>礼包金币：按当前层单只金币缩放，与金币袋同一把尺子（1 袋 = 5 只怪，同样吃等级乘区）。</summary>
+    public Big DailyGold(int tier)
+        => Big.Clamp(MobGold(S.Layer) * (tier == 0 ? 60 : 240) * (1 + 0.015 * (S.Level - 1)));
+
+    /// <summary>礼包墨晶：随本轮最高层缓慢长，封顶——前期是真保底，后期不抢商店生意。</summary>
+    public int DailyInk(int tier)
+    {
+        int n = tier == 0 ? 8 + S.MaxLayer / 8 : 30 + S.MaxLayer / 4;
+        return Math.Clamp(n, tier == 0 ? 8 : 30, tier == 0 ? 40 : 150);
+    }
+
+    public bool ClaimDaily(int tier, bool silent = false)
+    {
+        if (!DailyReady(tier)) return false;
+        var gold = DailyGold(tier);
+        int ink = DailyInk(tier);
+        AddGold(gold);
+        AddInk(Big.Of(ink));
+        S.DailyMask |= 1 << tier;
+        if (!silent) Log.Write($"每日礼包（{DailyTiers[tier]:N0} 档）：金币 +{Fmt.Large(gold)} · 墨晶 +{ink}");
+        Changed?.Invoke();
+        return true;
+    }
+
+    /// <summary>一键全领：每日礼包能领的档位 + 全部待领金币袋，只写一条汇总日志。</summary>
+    public void ClaimAll()
+    {
+        EnsureDaily();
+        int goldTiers = 0;
+        for (int i = 0; i < DailyTiers.Length; i++) if (ClaimDaily(i, silent: true)) goldTiers++;
+        int bagN = S.Bags.Count;
+        var bagSum = BagSum;
+        if (bagN > 0) { AddGold(bagSum); S.Bags.Clear(); }
+        if (goldTiers == 0 && bagN == 0) return;
+        var parts = new List<string>();
+        if (goldTiers > 0) parts.Add($"每日礼包 {goldTiers} 档");
+        if (bagN > 0) parts.Add($"金币袋 ×{bagN}（+{Fmt.Large(bagSum)}）");
+        Log.Write("一键全领：" + string.Join(" · ", parts));
+        Changed?.Invoke();
+    }
+
     long bagCounter;
     public void OnKeyPress()
     {
         if (!S.ListenKeys) return;
+        EnsureDaily();
         S.TotalKeys++;
+        S.DailyKeys++;
         bagCounter++;
         if (bagCounter < BagKeys) return;
         bagCounter = 0;
@@ -468,25 +617,92 @@ public class Game
         if (Gold.CompareTo(cost) < 0) return "金币不足";
         var g = Gold - cost;
         S.GoldM = g.M; S.GoldE = g.E;
-        string last = "";
-        for (int i = 0; i < count; i++)
+        S.BoxesOpened += count;
+
+        var hits = RollBoxes(count);
+
+        double gold = 0, ink = 0;
+        for (int i = 0; i < BoxTable.Length; i++)
         {
-            S.BoxesOpened++;
-            double r = Rng.NextDouble(), acc = 0;
-            foreach (var row in BoxTable)
+            if (hits[i] == 0) continue;
+            double amt = BoxTable[i].amount * (double)hits[i];
+            if (BoxTable[i].isInk) { AddInk(Big.Of(amt)); ink += amt; }
+            else { AddGold(Big.Of(amt)); gold += amt; }
+        }
+
+        Changed?.Invoke();
+
+        if (count == 1)
+        {
+            // 单开保留原来的逐档文案（"末档"这种说法对一匣没意义）
+            for (int i = 0; i < BoxTable.Length; i++)
+                if (hits[i] > 0)
+                    return (BoxTable[i].isInk ? "墨晶 +" : "金币 +") + BoxTable[i].amount.ToString("0");
+            return "";
+        }
+
+        var part = new List<string>();
+        if (gold > 0) part.Add("金币 +" + Fmt.Large(Big.Of(gold)));
+        if (ink > 0) part.Add("墨晶 +" + Fmt.Large(Big.Of(ink)));
+        string brief = $"{count} 匣：" + string.Join(" · ", part);
+        Log.Write(brief);
+        return brief;
+    }
+
+    /// <summary>
+    /// 掷 n 个墨匣，返回每一档命中的次数（只管抽，不发放奖励）。
+    /// n 小时逐次抽；n 大时改用多项分布的正态近似 —— 2000 次以上时两者在统计上
+    /// 不可分辨，但耗时恒定，否则 ×1B 档会把界面冻死。
+    /// </summary>
+    static long[] RollBoxes(int n)
+    {
+        int m = BoxTable.Length;
+        var hits = new long[m];
+
+        if (n <= 2000)
+        {
+            for (int i = 0; i < n; i++)
             {
-                acc += row.p;
-                if (r <= acc)
+                double r = Rng.NextDouble(), acc = 0;
+                for (int k = 0; k < m; k++)
                 {
-                    if (row.isInk) { AddInk(Big.Of(row.amount)); last = $"墨晶 +{row.amount:0}"; }
-                    else { AddGold(Big.Of(row.amount)); last = $"金币 +{row.amount:0}"; }
-                    break;
+                    acc += BoxTable[k].p;
+                    if (r <= acc) { hits[k]++; break; }
                 }
             }
-            Log.Write("墨匣：" + last);
+            return hits;
         }
-        Changed?.Invoke();
-        return count == 1 ? last : $"{count} 匣已开（末档 {last}）";
+
+        var v = new double[m];
+        double sum = 0;
+        for (int k = 0; k < m; k++)
+        {
+            double mu = n * BoxTable[k].p;
+            double sd = Math.Sqrt(mu * (1 - BoxTable[k].p));
+            double x = mu + sd * Gaussian();
+            if (x < 0) x = 0;
+            v[k] = x;
+            sum += x;
+        }
+        if (sum <= 0) { hits[0] = n; return hits; }
+
+        long assigned = 0;
+        for (int k = 0; k < m; k++)
+        {
+            hits[k] = (long)Math.Round(v[k] * n / sum);
+            assigned += hits[k];
+        }
+        hits[0] += n - assigned;                      // 四舍五入的零头补回第一档（通常只差个位数）
+        if (hits[0] < 0) hits[0] = 0;
+        return hits;
+    }
+
+    /// <summary>标准正态随机数（Box–Muller）。</summary>
+    static double Gaussian()
+    {
+        double u1 = 1.0 - Rng.NextDouble();
+        double u2 = Rng.NextDouble();
+        return Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2);
     }
 
     // ---- 转生（第六章）----
@@ -543,6 +759,7 @@ public class Game
     {
         try
         {
+            EnsureDaily();
             S.LastSaveUtc = DateTime.UtcNow;
             if (!Directory.Exists(Dir)) Directory.CreateDirectory(Dir);
             var json = JsonSerializer.Serialize(S, new JsonSerializerOptions { WriteIndented = true });
@@ -565,6 +782,7 @@ public class Game
         catch (Exception ex) { Log.Write("读档失败：" + ex.Message); }
         S.Bags ??= new List<double[]>();
         if (S.BattleSeconds < 1) S.BattleSeconds = 2;
+        EnsureDaily();   // 关了一整夜再开：今日敲击从 0 起算
     }
 
     void ApplyOffline()
