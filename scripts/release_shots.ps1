@@ -25,15 +25,25 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 if (-not (Test-Path $Dotnet)) { $Dotnet = "dotnet" }
-$raw = "docs\release\$Version\raw"
+# 用绝对路径：exe 的工作目录不一定是 $root，传相对路径会写到别处（曾因此排版找不到 raw）
+$raw = Join-Path $root "docs\release\$Version\raw"
 
 Write-Output "== 1/3 出图专用发布 =="
 & $Dotnet publish "src\KeySpirit\KeySpirit.csproj" -c Release -r win-x64 --self-contained false -o "dist\_shot" --nologo
 if ($LASTEXITCODE -ne 0) { throw "发布失败：多半是 dist\_shot 里的 dll 被占用" }
 
 Write-Output "== 2/3 逐页截图 =="
-& "dist\_shot\KeySpirit.exe" --shot $raw
-if ($LASTEXITCODE -ne 0) { throw "截图失败：见上方输出" }
+# 刚 publish 完时 exe 偶发启动失败（无输出、无图），重试一次即可；仍失败才抛错
+for ($try = 1; $try -le 2; $try++) {
+    & "dist\_shot\KeySpirit.exe" --shot $raw
+    $made = @(Get-ChildItem -Path $raw -Filter *.png -ErrorAction SilentlyContinue).Count
+    if ($made -ge 1) { break }
+    Write-Output "  截图未产出（第 $try 次），重试…"
+    Start-Sleep -Milliseconds 800
+}
+if (@(Get-ChildItem -Path $raw -Filter *.png -ErrorAction SilentlyContinue).Count -lt 1) {
+    throw "截图失败：$raw 下没有 png"
+}
 
 Write-Output "== 3/3 排版 =="
 python "scripts\make_release_shots.py" --version $Version

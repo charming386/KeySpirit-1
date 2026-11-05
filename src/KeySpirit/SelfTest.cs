@@ -303,15 +303,24 @@ public static class SelfTest
             Check("5,000 档已领后仅剩 20,000 档未达", !g.DailyReady(1), $"{g.S.DailyKeys}");
             for (int i = 0; i < 15000; i++) g.OnKeyPress();
             Check("达 20,000 档可领", g.DailyReady(1), $"{g.S.DailyKeys}");
-            g.ClaimAll();
-            Check("一键全领领到 20,000 档", g.DailyClaimed(1) && g.S.DailyMask == 0b11,
+            // 15.5 每日礼包必须手动逐档领：不再提供「一键全领」这类批量入口，
+            // 而且领金币袋也不能顺带把礼包带走——否则玩家一按就等于"自动领取"。
+            Check("未点之前 20,000 档保持可领（不会自动入账）",
+                g.DailyReady(1) && !g.DailyClaimed(1), $"mask {g.S.DailyMask}");
+            g.S.Bags.Add(new[] { 3.0, 0 });
+            g.ClaimBags();
+            Check("领金币袋不带走每日礼包",
+                g.DailyReady(1) && !g.DailyClaimed(1) && g.S.Bags.Count == 0,
+                $"mask {g.S.DailyMask} / 袋 {g.S.Bags.Count}");
+            bool claimed2 = g.ClaimDaily(1);
+            Check("手动点 20,000 档才入账", claimed2 && g.S.DailyMask == 0b11,
                 $"mask {g.S.DailyMask}");
             Check("两档都领完后再无可领", !g.DailyReady(0) && !g.DailyReady(1), "已全领");
 
-            // 15.5 今日数不受"领过"影响，只有跨零点才归零
+            // 15.6 今日数不受"领过"影响，只有跨零点才归零
             Check("领取不影响今日敲击计数", g.S.DailyKeys == 20000, $"{g.S.DailyKeys}");
 
-            // 15.6 领取页三行状态：今日进度 / 已领档灰显 / 未达档禁用色
+            // 15.7 领取页三行状态：今日进度 / 已领档灰显 / 未达档禁用色
             try
             {
                 g.S.DailyKeys = 6000;
@@ -351,7 +360,7 @@ public static class SelfTest
                 Check("已领档灰显（Dim #8D9AA6）", TextOf("5,000 档") == "#FF8D9AA6", TextOf("5,000 档"));
                 Check("未达档禁用色（#56606A）", TextOf("20,000 档") == "#FF56606A", TextOf("20,000 档"));
 
-                // 15.6b 进度文案的三种状态。旧实现把「两档都达标但都没领」说成「已全领」，
+                // 15.7b 进度文案的三种状态。旧实现把「两档都达标但都没领」说成「已全领」，
                 // 而下面两行明明都能点，属于自相矛盾。
                 var progM = tp.GetMethod("DailyProgText",
                     NF | System.Reflection.BindingFlags.Static)!;
@@ -367,7 +376,7 @@ public static class SelfTest
             }
             catch (Exception ex) { Check("领取页状态", false, "自测异常：" + ex.GetBaseException().Message); }
 
-            // 15.7 存档往返带上今日数据
+            // 15.8 存档往返带上今日数据
             g.Save();
             var saved = File.ReadAllText(Game.SavePath);
             Check("存档含今日敲击与领取标记",
@@ -587,6 +596,18 @@ public static class SelfTest
             Check("转生行带代价与保留项说明（置灰时也在）",
                 rbNote.Contains("保留") && rbNote.Contains("强化") && rbFg == "#FF56606A",
                 $"前景 {rbFg}（置灰 #FF56606A）；{rbNote}");
+
+            // 领取页两档礼包：必须说清「要手动点、不会被批量带走」，且页面里不能再有批量入口
+            var claimRows = PageRows("claim");
+            string c0 = NoteOf(Find(claimRows, $"{Game.DailyTiers[0]:N0} 档"));
+            string c1 = NoteOf(Find(claimRows, $"{Game.DailyTiers[1]:N0} 档"));
+            Check("领取页两档礼包带「手动领取」注释",
+                c0.Contains("手动") && c1.Contains("手动"),
+                c0.Length > 0 ? c0 : "5,000 档缺注释");
+            bool hasClaimAll = false;
+            foreach (var r in claimRows) if (LabelOf(r).Contains("一键全领")) hasClaimAll = true;
+            Check("领取页没有「一键全领」批量代领入口", !hasClaimAll,
+                hasClaimAll ? "仍存在一键全领行" : "已移除");
 
             // 气泡定位：右侧优先 → 右缘翻左侧 → 底部上顶，三种都不出工作区
             var place = typeof(KeySpirit.UI.NoteWindow).GetMethod("Place",

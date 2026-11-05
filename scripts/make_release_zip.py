@@ -1,4 +1,9 @@
-"""打发布 zip：单文件 exe + 资产 + 说明文档。"""
+"""打发布 zip：单文件 exe + 资产 + 说明文档。
+
+用法：
+    python scripts/make_release_zip.py --version v0.12.1
+"""
+import argparse
 import os
 import shutil
 import zipfile
@@ -7,7 +12,13 @@ ROOT = r"D:\project\TaskbarIdle"
 SINGLE = os.path.join(ROOT, "release", "_single")
 DIST = os.path.join(ROOT, "dist", "KeySpirit")
 PKG = os.path.join(ROOT, "release", "pkg")
-NAME = "KeySpirit-v0.12.0-win-x64"
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--version", default="v0.12.1", help="版本号，如 v0.12.1")
+a = ap.parse_args()
+VER = a.version
+
+NAME = f"KeySpirit-{VER}-win-x64"
 STAGE = os.path.join(PKG, NAME)
 OUT = os.path.join(ROOT, "release", NAME + ".zip")
 
@@ -27,8 +38,9 @@ shutil.copy2(os.path.join(DIST, "构建信息.txt"), os.path.join(STAGE, "构建
 shutil.copy2(r"D:\project\KeySpirit-dist\使用说明.txt", os.path.join(STAGE, "使用说明.txt"))
 
 os.makedirs(os.path.join(STAGE, "更新说明"))
-shutil.copy2(os.path.join(ROOT, "更新说明", "v0.12.0.md"),
-             os.path.join(STAGE, "更新说明", "v0.12.0.md"))
+notice = f"{VER}.md"
+shutil.copy2(os.path.join(ROOT, "更新说明", notice),
+             os.path.join(STAGE, "更新说明", notice))
 
 # 打包
 if os.path.exists(OUT):

@@ -406,22 +406,9 @@ public class Game
         return true;
     }
 
-    /// <summary>一键全领：每日礼包能领的档位 + 全部待领金币袋，只写一条汇总日志。</summary>
-    public void ClaimAll()
-    {
-        EnsureDaily();
-        int goldTiers = 0;
-        for (int i = 0; i < DailyTiers.Length; i++) if (ClaimDaily(i, silent: true)) goldTiers++;
-        int bagN = S.Bags.Count;
-        var bagSum = BagSum;
-        if (bagN > 0) { AddGold(bagSum); S.Bags.Clear(); }
-        if (goldTiers == 0 && bagN == 0) return;
-        var parts = new List<string>();
-        if (goldTiers > 0) parts.Add($"每日礼包 {goldTiers} 档");
-        if (bagN > 0) parts.Add($"金币袋 ×{bagN}（+{Fmt.Large(bagSum)}）");
-        Log.Write("一键全领：" + string.Join(" · ", parts));
-        Changed?.Invoke();
-    }
+    // 注：这里原先还有一个 ClaimAll「一键全领」，会把每日礼包两档连同金币袋一次带走。
+    // 按需求改成**每日礼包只能逐档手动领**，因此撤掉了这个批量入口——
+    // 金币袋本身点一行就是全部入账（ClaimBags），礼包则必须玩家自己点档位行。
 
     long bagCounter;
     public void OnKeyPress()

@@ -1,8 +1,8 @@
 """把 `KeySpirit.exe --shot` 出的原图排版成发布配图。
 
 用法（项目根目录）：
-    KeySpirit.exe --shot docs/release/v0.12.0/raw
-    python scripts/make_release_shots.py --version v0.12.0
+    KeySpirit.exe --shot docs/release/v0.12.1/raw
+    python scripts/make_release_shots.py --version v0.12.1
 
 产出（docs/release/<版本>/*.png）：
     01-battle.png   战斗详情（怪物种类 + 图标 + 固定红血条）
@@ -120,7 +120,7 @@ def hp_compare(raw, out, version):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--version", default="v0.12.0")
+    ap.add_argument("--version", default="v0.12.1")
     ap.add_argument("--raw", default=None)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
@@ -135,7 +135,7 @@ def main():
 
     card(os.path.join(raw, "03-claim.png"), os.path.join(out, "02-claim.png"),
          "每日敲击与每日礼包：跨零点自动重置", "今日敲击按当日累计，5,000 / 20,000 两档达标可领；"
-         "金币袋与两档礼包支持一键全领", a.version)
+         "两档都需手动点这一行领取，不会被金币袋批量带走", a.version)
 
     card(os.path.join(raw, "04-shop.png"), os.path.join(out, "03-shop.png"),
          "商店：单次数量一档控制", "1 / 10 / 100 / 1K / 1M / 1B / max 七档切换，"

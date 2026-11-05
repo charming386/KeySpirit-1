@@ -1084,7 +1084,8 @@ public class PanelWindow : Window
             int tier = i;
             var r = RowMake($"{Game.DailyTiers[i]:N0} 档", DailyRewardText(i),
                             () => { Game.I.ClaimDaily(tier); RebuildSub(); },
-                            icon: "icon-reward");
+                            icon: "icon-reward",
+                            note: "每日礼包要手动点这一行才入账，不会被金币袋批量带走；本地跨零点恢复两档。");
             r.Tick = () =>
             {
                 bool claimed = Game.I.DailyClaimed(tier);
@@ -1109,11 +1110,12 @@ public class PanelWindow : Window
         }
         else
         {
-            var r = RowMake($"金币袋 ×{s.S.Bags.Count}", $"+{Fmt.Large(s.BagSum)}",
-                () => { s.ClaimBags(); RebuildSub(); });
-            Add(r);
+            // 金币袋没有「单袋领」这回事，点这一行就是把所有待领袋一次入账。
+            // 原来下方还有一条「一键全领」，它会把每日礼包两档也顺手带走；
+            // 按需求礼包必须玩家自己点档位行，所以那条批量入口整体撤掉了。
+            Add(RowMake($"金币袋 ×{s.S.Bags.Count}", $"+{Fmt.Large(s.BagSum)}",
+                () => { s.ClaimBags(); RebuildSub(); }));
         }
-        Add(RowMake("一键全领", null, () => { s.ClaimAll(); RebuildSub(); }));
     }
 
     /// <summary>今日敲击行的右侧进度：显示「到下一个还没领的档」的进度，全领完显示已领。</summary>
