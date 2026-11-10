@@ -1248,7 +1248,7 @@ public class PanelWindow : Window
     {
         "每级 ×1.06 攻击（叠乘）。攻击决定每回合能打掉多少血",
         "每级 ×1.06 生命。生命归零会力竭休整，休整期间不战斗",
-        "每级 +0.15% 暴击率，60% 封顶；超出部分转成暴伤",
+        "每级 +0.15% 暴击率（60% 封顶），并且每级 ×1.06 暴伤",
         "每级 ×1.06 防御。层数越高怪物攻击越狠，主要靠它扛",
     };
 
@@ -1372,13 +1372,15 @@ public class PanelWindow : Window
         double r0 = Game.CritRateOf(lv), d0 = Game.CritDmgOf(lv);
         double r1 = Game.CritRateOf(to), d1 = Game.CritDmgOf(to);
 
+        // 暴伤从 v0.13.0 起是指数成长（每级 ×1.06），几百级后就是亿级倍率，
+        // 不能再用 Fmt.Pct 打成 "280000000000%"——一律走大数格式化，显示成「×2.8B」。
         static string At(double r, double d) => $"暴击 {Fmt.Pct(r, 2)}"
-            + (d > 0.5 + 1e-9 ? $" · 暴伤 +{Fmt.Pct(d, 1)}" : "");
+            + $" · 暴伤 ×{Fmt.Small(Big.Of(1 + d))}";
 
         string now = At(r0, d0);
         if (!preview) return "　　" + now;
         // 暴击率已经到顶、这一档涨的是暴伤 → 只报暴伤，免得显示「60.00% → 60.00%」
-        string nxt = r1 - r0 > 1e-9 ? At(r1, d1) : $"暴伤 +{Fmt.Pct(d1, 1)}";
+        string nxt = r1 - r0 > 1e-9 ? At(r1, d1) : $"暴伤 ×{Fmt.Small(Big.Of(1 + d1))}";
         return $"　　{now} → {nxt}";
     }
 
@@ -1626,7 +1628,7 @@ public class PanelWindow : Window
             DetailRow("生命", () => $"{Fmt.Large(Game.I.Hp)} / {Fmt.Large(Game.I.HpMax)}（本体 {Fmt.Small(Game.I.BaseHp)}）");
             DetailRow("攻击", () => $"{Fmt.Small(Game.I.PlayerAtk)}（本体 {Fmt.Small(Game.I.BaseAtk)}）");
             DetailRow("防御", () => $"{Fmt.Small(Game.I.PlayerDef)}（本体 {Fmt.Small(Game.I.BaseDef)}）");
-            DetailRow("暴击", () => $"{Fmt.Pct(Game.I.CritRate, 2)} · 暴伤 +{Fmt.Pct(Game.I.CritDmg, 0)}");
+            DetailRow("暴击", () => $"{Fmt.Pct(Game.I.CritRate, 2)} · 暴伤 ×{Fmt.Small(Big.Of(1 + Game.I.CritDmg))}");
             DetailRow("墨根", () => $"{Game.I.S.Root} / {Limits.MaxSoul}（×{Fmt.Large(Big.Pow(1.06, Game.I.S.Root))}）");
             DetailRow("层数", () => $"第 {Game.I.Layer} 层 · 最高 {Game.I.MaxLayer} · 第 {Game.I.S.Cycle} 轮");
             // 状态带倒计时：这一行每秒随 LiveRefresh 重读，所以修整中的秒数会自己往下走。

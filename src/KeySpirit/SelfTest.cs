@@ -287,7 +287,7 @@ public static class SelfTest
             Check("本命器次数档刷新", false, "自测异常：" + ex.GetBaseException().Message);
         }
 
-        // 13.5) 暴击：面板文案与实战必须同一份数值（60% 封顶、溢出转暴伤）
+        // 13.5) 暴击：面板文案与实战必须同一份数值（60% 封顶、暴伤指数成长）
         try
         {
             var t = typeof(KeySpirit.UI.PanelWindow);
@@ -297,21 +297,94 @@ public static class SelfTest
             Check("墨眸 387 级起暴击率封顶 60%",
                 Math.Abs(Game.CritRateOf(387) - 0.60) < 1e-9,
                 Fmt.Pct(Game.CritRateOf(387), 2));
-            Check("墨眸 500 级仍 60%、溢出转成暴伤",
-                Math.Abs(Game.CritRateOf(500) - 0.60) < 1e-9 && Game.CritDmgOf(500) > 0.55,
-                $"{Fmt.Pct(Game.CritRateOf(500), 2)} · 暴伤 +{Fmt.Pct(Game.CritDmgOf(500), 1)}");
+            Check("暴伤每级 ×1.06（100 级 = 0.5×1.06^100）",
+                Math.Abs(Game.CritDmgOf(100) - 0.5 * Math.Pow(1.06, 100)) < 1e-6
+                && Game.CritDmgOf(0) == 0.5,
+                $"0 级 +50% · 100 级 ×{Fmt.Small(Big.Of(1 + Game.CritDmgOf(100)))}");
+
+            // 关键平衡断言：同样 100 级，墨眸的期望伤害必须与墨刃同一个数量级
+            // （旧版线性暴伤只有 1/68，指数成本买线性收益 = 废属性）
+            double eyeExp = 1 + Game.CritRateOf(100) * Game.CritDmgOf(100);
+            double bladeMul = Math.Pow(1.06, 100);
+            double ratio = eyeExp / bladeMul;
+            Check("墨眸与墨刃的百级回报同阶（旧版差 68 倍）",
+                ratio > 0.05 && ratio < 1.0, $"墨眸 ×{eyeExp:0.0} vs 墨刃 ×{bladeMul:0.0} → 比值 {ratio:0.00}");
 
             string t500 = (string)eff.Invoke(null, new object[] { 2, 500, 100 })!;
             Check("封顶后墨眸预览改报暴伤、不再出现 60% 以上的暴击率",
                 t500.Contains("暴伤") && !t500.Contains("75.00%"), t500);
 
             string t300 = (string)eff.Invoke(null, new object[] { 2, 300, 10 })!;
-            Check("未封顶时墨眸预览照旧报暴击率",
-                t300.Contains("暴击") && !t300.Contains("暴伤"), t300);
+            Check("未封顶时预览同时给出在涨的暴击率与暴伤",
+                t300.Contains("暴击 47.00%") && t300.Contains("暴击 48.50%") && t300.Contains("暴伤"), t300);
         }
         catch (Exception ex)
         {
             Check("暴击面板文案", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
+        // 13.55) 防御：软减伤曲线（旧版减法减伤会在阈值处从「1 血/回合」跳到「按亿计」）
+        try
+        {
+            var atk = Big.Of(1e9);
+
+            var justBelow = Game.TakenDamage(atk, Big.Of(1.9e9));   // 防御是怪攻的 1.9 倍
+            Check("防御约为怪攻两倍时仍会掉血，不再被 clamp 成 1 点",
+                justBelow.CompareTo(Big.Of(1)) > 0 && justBelow.CompareTo(atk) < 0,
+                $"{Fmt.Large(justBelow)} / 怪攻 {Fmt.Large(atk)}");
+
+            var equal = Game.TakenDamage(atk, atk);                 // 防御 = 怪攻
+            Check("防御等于怪攻时受伤约为 1/4 怪攻",
+                Math.Abs(equal.ToDouble() / atk.ToDouble() - 0.25) < 0.01,
+                $"{equal.ToDouble() / atk.ToDouble():0.000} × 怪攻");
+
+            var huge = Game.TakenDamage(atk, Big.Of(1e12));         // 防御碾压
+            Check("防御碾压时仍有 5% 下限受伤（力竭机制不能死）",
+                Math.Abs(huge.ToDouble() / atk.ToDouble() - 0.05) < 0.001,
+                $"{huge.ToDouble() / atk.ToDouble():0.000} × 怪攻");
+
+            var tiny = Game.TakenDamage(atk, Big.Of(1));            // 防御形同虚设
+            Check("防御几乎为 0 时接近全吃怪攻",
+                tiny.ToDouble() / atk.ToDouble() > 0.99,
+                $"{tiny.ToDouble() / atk.ToDouble():0.000} × 怪攻");
+
+            // 平滑性：防御每翻一倍，受伤必须单调下降且不出现断崖
+            double prev = double.MaxValue; bool mono = true, smooth = true;
+            for (int i = 0; i <= 60; i++)
+            {
+                var d = Game.TakenDamage(atk, Big.Of(Math.Pow(2, i) * 1e6));
+                double r = d.ToDouble() / atk.ToDouble();
+                if (r > prev + 1e-12) mono = false;
+                if (prev < double.MaxValue && r < prev * 0.49) smooth = false;   // 单步不能腰斩以上
+                prev = r;
+            }
+            Check("防御翻倍时受伤单调下降且无断崖", mono && smooth, $"最终 {prev:0.0000} × 怪攻");
+        }
+        catch (Exception ex)
+        {
+            Check("防御软减伤", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
+        // 13.56) 精英 / 守层者的经验倍率：几千层时「两三只精英 = 一级」
+        try
+        {
+            g.S.Layer = 3000; g.S.MaxLayer = 3000;
+            double k3 = g.ExpKills;                       // 3000 层要打几只小怪一级
+            Check("3000 层：2 只精英约等于一级",
+                Math.Abs(k3 / g.EliteExpMul - 2.0) < 0.6,
+                $"小怪 {k3:0.0} 只 / 精英 {g.EliteExpMul:0.0} 倍 → {k3 / g.EliteExpMul:0.00} 只精英一级");
+            Check("3000 层：1 只守层者约等于一级",
+                Math.Abs(k3 / g.KeeperExpMul - 1.0) < 0.05,
+                $"{k3 / g.KeeperExpMul:0.00} 只守层者一级");
+
+            g.S.Layer = 1; g.S.MaxLayer = 1;
+            Check("第 1 层倍率不加成（前期保持打两只小怪升一级）",
+                g.EliteExpMul == 1.5 && g.KeeperExpMul == 3.0,
+                $"精英 ×{g.EliteExpMul:0.0} · 守层者 ×{g.KeeperExpMul:0.0}");
+        }
+        catch (Exception ex)
+        {
+            Check("精英经验倍率", false, "自测异常：" + ex.GetBaseException().Message);
         }
 
         // 13.6) 强化预览必须显示**最终属性**，不能只算强化那一项

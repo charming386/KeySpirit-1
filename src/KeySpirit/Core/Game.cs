@@ -196,8 +196,19 @@ public class Game
     /// </summary>
     public static double CritRateOf(int eyeLv) => Math.Min(0.60, 0.02 + 0.0015 * eyeLv);
 
-    /// <summary>暴伤：基础 +50%；封顶后溢出的暴击率按 1:1 转成暴伤（每级 +0.15 个百分点）。</summary>
-    public static double CritDmgOf(int eyeLv) => 0.5 + Math.Max(0, 0.02 + 0.0015 * eyeLv - 0.60);
+    /// <summary>
+    /// 暴击伤害 = **50% × 1.06^墨眸等级**（每级 +6%，指数）。
+    ///
+    /// v0.13.0 由「0.5 + 封顶后溢出的暴击率线性转成暴伤」改成指数成长。
+    /// 原因：另外三件每级都是 ×1.06 的指数，而暴伤是线性 —— 同样一笔墨晶，
+    /// 投墨眸的期望伤害回报只有投墨刃的 1/68。指数成本买线性收益，这条线必然是废属性。
+    /// 改成指数后期望伤害 ≈ 1 + 0.6 × 暴伤（暴击率封顶 0.6），与墨刃同阶，
+    /// 前期（暴击率还低）依然略弱一点，靠「暴击有惊喜感」补回来。
+    ///
+    /// 注意：10000 级时 1.06^10000 ≈ 1e+253，仍在 double 范围内；
+    /// 再往上乘到伤害上会被 Big.Clamp 收到 1.8e+303，不会溢出。
+    /// </summary>
+    public static double CritDmgOf(int eyeLv) => 0.5 * Math.Pow(1.06, eyeLv);
 
     public double CritRate => CritRateOf(S.EnhEye);
     public double CritDmg => CritDmgOf(S.EnhEye);
@@ -222,6 +233,16 @@ public class Game
     /// 3000 层约 34 只（≈两三层）。**难度只增不减**，不会再出现后期一只怪连升几千级。
     /// </summary>
     public Big ExpNeed => Big.Clamp(MobExp(ExpLayer) * ExpKills);
+
+    /// <summary>
+    /// 精英的经验倍率（相对同层单只小怪）：**2 只精英 ≈ 一级**。
+    /// 低层取 1.5 的下限（那时 ExpKills 只有 2 点几，按比例算会让第 5 只一次给半级多）。
+    /// 3000 层 ExpKills≈34 → 16.9 倍；386 层 ≈ 13.4 → 6.7 倍。
+    /// </summary>
+    public double EliteExpMul => Math.Max(1.5, ExpKills * 0.5);
+
+    /// <summary>守层者的经验倍率：**一只守层者 ≈ 一级**（下限 3 保住前期）。</summary>
+    public double KeeperExpMul => Math.Max(3.0, ExpKills);
 
 
     public double LayerProgress => MobIndex / 10.0;
@@ -304,10 +325,29 @@ public class Game
         }
 
         // 怪物反击
-        var taken = MobAtkNow - PlayerDef * 0.5;
-        if (taken.CompareTo(Big.Of(1)) < 0) taken = Big.Of(1);
-        Hp = Hp - taken;
+        Hp = Hp - TakenDamage(MobAtkNow, PlayerDef);
         if (Hp.CompareTo(Big.Zero) <= 0) Exhaust();
+    }
+
+    /// <summary>
+    /// 玩家这一回合挨多少伤害：**atk² / (atk + def×3)**，下限 atk × 5%。
+    ///
+    /// v0.13.0 由「atk − def×0.5」（减法减伤，最低 1 血）改成这个软曲线。原来那套有两个死结：
+    ///   · 防御一旦超过怪攻的 2 倍，伤害被 clamp 到 **1 血/回合**，血量上亿也打不完，
+    ///     力竭 → 休整 → 自动回退这套机制在中期彻底作废；
+    ///   · 怪攻只要涨过那个阈值，伤害立刻从「1」跳到「按亿计」，两回合把人打死 ——
+    ///     中间没有任何过渡带。减法减伤遇到两边都在指数增长，跨阈值必然断崖。
+    ///
+    /// 新公式的性质：def = atk 时受伤 = atk/4（减伤 75%）；def 是 atk 的 10 倍时 = atk/31；
+    /// def → 0 时 ≈ atk（全吃），与旧公式一致；永远平滑，没有阈值。
+    /// 保留 5% 下限是**故意**的：防御再高也总会掉一点血，力竭机制必须一直活着。
+    /// </summary>
+    public static Big TakenDamage(Big atk, Big def)
+    {
+        if (atk.IsZero) return Big.Zero;
+        var soft = atk * atk / (atk + def * 3);
+        var low = atk * 0.05;
+        return soft.CompareTo(low) < 0 ? low : soft;
     }
 
     void KillMob()
@@ -320,8 +360,11 @@ public class Game
         var g = MobGold(S.Layer);
         var e = MobExp(S.Layer);
         var ink = Big.Zero;
-        if (MobIndex == 5) { g = g * 1.5; e = e * 1.5; ink = Big.Of(1); }
-        else if (MobIndex == 10) { g = g * 3; e = e * 3; ink = Big.Of(3); }
+        // 经验倍率随层数放大，金币倍率保持 1.5 / 3 不变（金币是经济，经验是节奏，两件事）。
+        // 目的：几千层时「两三只精英 = 一级」「一只守层者 = 一级」，与设计稿 4.1 的口径对齐；
+        // 低层（ExpKills 还小）不加成，保持「打两只小怪升一级」的前期手感。
+        if (MobIndex == 5) { g = g * 1.5; e = e * EliteExpMul; ink = Big.Of(1); }
+        else if (MobIndex == 10) { g = g * 3; e = e * KeeperExpMul; ink = Big.Of(3); }
         AddGold(g);
         AddInk(ink);
         AddExp(e);

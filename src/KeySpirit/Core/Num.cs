@@ -82,6 +82,9 @@ public readonly struct Big : IComparable<Big>
     public static Big operator *(double k, Big a) => a * Of(k);
     public static Big operator /(Big a, double k) => new Big(a.M / k, a.E);
 
+    /// <summary>Big / Big：尾数相除、指数相减，由构造函数负责归一化。防御的软减伤公式要用。</summary>
+    public static Big operator /(Big a, Big b) => b.IsZero ? Zero : new Big(a.M / b.M, a.E - b.E);
+
     public static bool operator <(Big a, Big b) => a.CompareTo(b) < 0;
     public static bool operator >(Big a, Big b) => a.CompareTo(b) > 0;
     public static bool operator <=(Big a, Big b) => a.CompareTo(b) <= 0;
