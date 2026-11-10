@@ -37,6 +37,9 @@ public static class Shot
         ("05-ear",     "ear"),
         ("06-detail",  "detail"),
         ("07-note",    "detail"),        // 带悬停注释气泡，走 SnapWithNote
+        ("08-danger",  "danger"),        // 设置 › 危险操作：三态确认的初始态
+        ("09-danger-y", "danger@1"),     // @N = 进页后把重置按钮按到第 N 档（黄）
+        ("10-danger-o", "danger@2"),     // 第二档（橙）
     };
 
     /// <summary>07 那张图解释哪一行（按可见文字模糊匹配）。</summary>
@@ -46,19 +49,31 @@ public static class Shot
     {
         Directory.CreateDirectory(outDir);
 
+        // 出图**绝不碰玩家真实存档**：读档、存档、日志全部重定向到临时目录。
+        // Demo() 虽然会覆盖绝大多数字段，但 Boot() 的读档与离线结算仍会先吃一遍真实数据，
+        // 一旦以后有人在出图路径里加了 Save，就会把演示存档写进玩家档里。
+        Game.DirOverride ??= Path.Combine(Path.GetTempPath(), "keyspirit_shot");
+
         Game.I.Boot();
         Demo();
 
         // 光标挪到左上角：PickSide 据此把子列放到主列右侧，构图每次都一样。
         try { SetCursorPos(0, 0); } catch { }
 
-        foreach (var (file, page) in Pages)
+        foreach (var (file, pageSpec) in Pages)
         {
+            // 「page@N」= 进页后再把初始化重置按到第 N 档，用来出三态配图
+            string page = pageSpec;
+            int tone = 0;
+            int at = pageSpec.IndexOf('@');
+            if (at > 0) { page = pageSpec[..at]; int.TryParse(pageSpec[(at + 1)..], out tone); }
+
             var w = new PanelWindow { StartPage = page };
             try
             {
                 w.ShowPanel();
                 Pump();
+                if (tone > 0) { w.ShotResetTone(tone); Pump(); }
                 string path = Path.Combine(outDir, file + ".png");
                 if (file == "07-note") SnapWithNote(w, path, NoteRowKey);
                 else Snap(w, path);
@@ -109,7 +124,7 @@ public static class Shot
         var g = Game.I;
         var s = g.S;
 
-        s.Level = 26;
+        s.Level = 78;                     // 14 层在新曲线下大约就是这个等级（约 6 级/层）
         s.Layer = 14;
         s.MaxLayer = 14;
         s.Cycle = 1;
@@ -130,6 +145,12 @@ public static class Shot
         s.Bags.Add(new[] { 1.2, 0 });     // 金币袋 ×2
         s.Bags.Add(new[] { 3.0, 1 });
         s.Paused = false;
+
+        // 经验：定成「下一级 99%」。演示存档必须自己给全，不能漏给——
+        // 漏了就会沿用玩家真实存档的经验值，配上新的需求曲线会显示成「213K / 94」这种鬼数字。
+        var need = g.ExpNeed;
+        var expB = new Big(need.M * 0.99, need.E);
+        s.ExpM = expB.M; s.ExpE = expB.E;
 
         g.EnsureDaily();
         g.ResetFight();

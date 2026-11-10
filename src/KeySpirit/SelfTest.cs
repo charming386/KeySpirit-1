@@ -60,6 +60,12 @@ public static class SelfTest
         var before = g.Gold;
         g.ClaimBags();
         Check("领取后金币增加", g.Gold.CompareTo(before) > 0, $"{Fmt.Large(before)} → {Fmt.Large(g.Gold)}");
+
+        // 袋值基准：2.5 只同层怪 × 等级乘区（原为 5 只，v0.12.2 按需求减半）
+        var oneBag = g.BagValue(1);
+        var bagExpect = Big.Clamp(Game.MobGold(g.Layer) * Game.BagMobMul * (1 + 0.015 * (g.Level - 1)));
+        Check("单袋金币 = 2.5 只怪 × 等级乘区", Math.Abs(oneBag.Log10 - bagExpect.Log10) < 1e-9,
+            $"{Fmt.Large(oneBag)}（第 {g.Layer} 层 · Lv.{g.Level}）");
         for (int i = 0; i < Game.BagKeys * 25; i++) g.OnKeyPress();
         Check("待领上限 20 袋", g.S.Bags.Count <= 20, $"袋 {g.S.Bags.Count}");
 
@@ -101,6 +107,44 @@ public static class SelfTest
         Check("连升总成本 = 逐级成本之和", g.EnhCostTotal(0, 5).CompareTo(Big.Zero) > 0,
             $"5 级共 {Fmt.Large(g.EnhCostTotal(0, 5))} 墨晶");
 
+        // 7c) 等级与经验（4.1，v0.13.0 重做）：需求挂「本轮最高层单只经验 × 只数」
+        int keepL0 = g.S.Layer, keepM0 = g.S.MaxLayer;
+        g.S.Layer = 1; g.S.MaxLayer = 1;
+        double k1 = g.ExpKills;
+        g.S.Layer = 300; g.S.MaxLayer = 300;
+        double k300 = g.ExpKills;
+        var need300 = g.ExpNeed;
+        g.S.Layer = 3000; g.S.MaxLayer = 3000;
+        double k3000 = g.ExpKills;
+        Check("升级越来越难：2.6 只 → 12 只 → 34 只",
+            Math.Abs(k1 - (Game.ExpKillsBase + Game.ExpKillsSlope)) < 1e-9
+            && k1 < k300 && k300 < k3000 && k300 > 11 && k3000 > 30,
+            $"1 层 {k1:0.0} 只 · 300 层 {k300:0.0} 只 · 3000 层 {k3000:0.0} 只");
+        Check("升级需求 = 当层单只经验 × 只数",
+            Math.Abs(need300.Log10 - (MobExp(300) * k300).Log10) < 1e-9, Fmt.Large(need300));
+
+        // 退回低层不能刷级：需求取「本轮最高层」，只增不减
+        g.S.MaxLayer = 300; g.S.Layer = 1;
+        Check("退回第 1 层仍按最高层算需求", Math.Abs(g.ExpKills - k300) < 1e-9, $"{g.ExpKills:0.0} 只 / 级");
+        g.S.Layer = keepL0; g.S.MaxLayer = keepM0;
+
+        // 7d) 强化成本斜率 1.07（v0.13.0 由 1.062 上调）
+        double c11 = g.EnhCost(0, 11).ToDouble();
+        Check("墨刃第 11 级成本 = 2×1.07^10", Math.Abs(c11 - 2 * Math.Pow(Game.EnhRate, 10)) < 1e-6,
+            $"{c11:0.00} 墨晶");
+
+        // 7e) 等级加点（v0.13.0）：每级给本体攻/血/防加固定值，不再是纯乘区
+        int lv0 = g.Level;
+        var bAtk0 = g.BaseAtk; var bHp0 = g.BaseHp; var bDef0 = g.BaseDef;
+        g.AddExp(g.ExpNeed);
+        int ups = g.Level - lv0;
+        Check("升一级：本体攻 +1 · 血 +10 · 防 +0.5",
+            ups >= 1
+            && Math.Abs((g.BaseAtk - bAtk0).ToDouble() - Game.LvAtkGain * ups) < 1e-6
+            && Math.Abs((g.BaseHp - bHp0).ToDouble() - Game.LvHpGain * ups) < 1e-6
+            && Math.Abs((g.BaseDef - bDef0).ToDouble() - Game.LvDefGain * ups) < 1e-6,
+            $"Lv {lv0} → {g.Level}，本体攻 {Fmt.Small(bAtk0)} → {Fmt.Small(g.BaseAtk)}");
+
         // 8) 层数控制（3.7）
         g.S.MaxLayer = 200;
         g.JumpTo(150);
@@ -108,16 +152,32 @@ public static class SelfTest
         g.JumpTo(999);
         Check("超出已通层被夹取", g.Layer == 200, $"layer {g.Layer}");
 
-        // 9) 转生（第六章）
+        // 9) 转生（第六章）：**现金没收，投入保留**
         g.S.MaxLayer = 200;
         int gain = g.RebirthGain;
         Check("转生墨根 = floor(0.35×200)=70", gain == 70, $"gain {gain}");
-        var goldKept = g.Gold;
-        var enhKept = g.S.EnhBlade;
+
+        // 先把三种「现金」都造出来，否则清零断言会假通过（0 → 0）
+        g.AddGold(Big.Of(123456));
+        g.AddInk(Big.Of(7890));
+        g.S.Bags.Add(new double[] { 1.5, 3 });
+        g.S.Bags.Add(new double[] { 2.5, 2 });
+        var goldPre = g.Gold;
+        var inkPre = g.Ink;
+        int bagPre = g.S.Bags.Count;
+        var enhKept = (g.S.EnhBlade, g.S.EnhRobe, g.S.EnhEye, g.S.EnhSeal);
+        int rootKept = g.S.Root;
+
         g.Rebirth();
-        Check("转生后墨根到账", g.S.Root >= 70, $"墨根 {g.S.Root}");
-        Check("转生保留金币与强化", g.Gold.CompareTo(goldKept) == 0 && g.S.EnhBlade == enhKept,
-            $"金币 {Fmt.Large(g.Gold)}，墨刃 +{g.S.EnhBlade}");
+        Check("转生后墨根到账", g.S.Root == rootKept + gain, $"墨根 {rootKept} → {g.S.Root}");
+        Check("转生清零金币与墨晶",
+            g.Gold.IsZero && g.Ink.IsZero,
+            $"{Fmt.Large(goldPre)} / {Fmt.Large(inkPre)} → {Fmt.Large(g.Gold)} / {Fmt.Large(g.Ink)}");
+        Check("转生清空待领金币袋（否则能带走旧层的钱）", g.S.Bags.Count == 0,
+            $"原 {bagPre} 袋 → {g.S.Bags.Count} 袋");
+        Check("转生保留本命器四件强化等级",
+            (g.S.EnhBlade, g.S.EnhRobe, g.S.EnhEye, g.S.EnhSeal) == enhKept,
+            $"墨刃 {g.S.EnhBlade} / 墨衣 {g.S.EnhRobe} / 墨眸 {g.S.EnhEye} / 墨印 {g.S.EnhSeal}");
         Check("转生重置层数与等级", g.Layer == 1 && g.Level == 1, $"layer {g.Layer}, lv {g.Level}");
 
         // 10) 上限夹取
@@ -256,8 +316,29 @@ public static class SelfTest
             var countOf = t.GetMethod("ShopCount",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
             g.S.ShopBatch = -1;
-            int maxN = (int)countOf.Invoke(null, new object[] { Game.InkPrice })!;
-            Check("商店 max 档按金币买得起、并封顶 10 亿", maxN == 1000000000, maxN.ToString("N0"));
+            g.S.GoldM = 1e12; g.S.GoldE = 0;
+            g.S.InkM = 0; g.S.InkE = 0;
+            var maxN = (Big)countOf.Invoke(null, new object[] { Game.InkPrice })!;
+            // 1e12 金币 / 25 一颗 = 40B 颗。旧版这里被 int 封在 10 亿，max 名不副实
+            Check("商店 max 档 = 金币买得起的全部（40B，不封顶）",
+                Math.Abs(maxN.ToDouble() - 4e10) < 1e6, Fmt.Large(maxN));
+
+            bool okMax = g.BuyInk(maxN);
+            Check("max 一次把钱花光、墨晶到账",
+                okMax && g.Gold.IsZero && g.Ink.ToDouble() > 3.9e10,
+                $"余 {Fmt.Large(g.Gold)} 金币 / {Fmt.Large(g.Ink)} 墨晶");
+
+            // 中期以后金币是 Big 量级，max 也要一路到底：这条就是「max 只有 1B」的正题
+            g.S.GoldM = 1e100; g.S.GoldE = 0;
+            g.S.InkM = 0; g.S.InkE = 0;
+            var hugeN = (Big)countOf.Invoke(null, new object[] { 250 })!;
+            bool okHuge = g.OpenBox(hugeN) != null;
+            Check("金币 1e100 时 max 开匣不退回 1B、计数不溢出",
+                okHuge && hugeN.ToDouble() > 1e95 && g.S.BoxesOpened == long.MaxValue,
+                $"×{Fmt.Large(hugeN)} · 开匣 {g.S.BoxesOpened}");
+
+            g.S.GoldM = 1e6; g.S.GoldE = 0;
+            g.S.InkM = 0; g.S.InkE = 0;
             g.S.ShopBatch = 1;
         }
         catch (Exception ex)
@@ -593,8 +674,8 @@ public static class SelfTest
                 : (System.Windows.Controls.TextBlock)rbRow.GetType().GetField("Label")!.GetValue(rbRow)!;
             string rbFg = (rbLabel?.Foreground as System.Windows.Media.SolidColorBrush)?.Color.ToString() ?? "-";
             g.S.MaxLayer = keepMax;
-            Check("转生行带代价与保留项说明（置灰时也在）",
-                rbNote.Contains("保留") && rbNote.Contains("强化") && rbFg == "#FF56606A",
+            Check("转生行说明现金清零、投入保留（置灰时也在）",
+                rbNote.Contains("清空") && rbNote.Contains("保留") && rbNote.Contains("强化") && rbFg == "#FF56606A",
                 $"前景 {rbFg}（置灰 #FF56606A）；{rbNote}");
 
             // 领取页两档礼包：必须说清「要手动点、不会被批量带走」，且页面里不能再有批量入口
@@ -640,6 +721,113 @@ public static class SelfTest
                 + (nl > 0 ? trace[..nl] : trace).Trim());
         }
 
+        // 20) 初始化重置（8.4.2）：设置 › 危险操作 › 初始化重置，暗红字 + 0.4 秒注释 + 黄→橙→执行
+        //     放在最后：它会把 g 的存档整份换新，前面的断言都依赖那些数据。
+        try
+        {
+            const System.Reflection.BindingFlags NF4 = System.Reflection.BindingFlags.NonPublic
+                                                     | System.Reflection.BindingFlags.Instance;
+            var tp4 = typeof(KeySpirit.UI.PanelWindow);
+
+            List<object> RowsOn(string key, out object panel)
+            {
+                panel = Activator.CreateInstance(tp4)!;
+                tp4.GetField("page", NF4)!.SetValue(panel, key);
+                tp4.GetMethod("Build", NF4)!.Invoke(panel, null);
+                var list = new List<object>();
+                foreach (var o in (System.Collections.IList)tp4.GetField("rows", NF4)!.GetValue(panel)!) list.Add(o!);
+                return list;
+            }
+            System.Windows.Controls.TextBlock? LbOf(object r)
+                => r.GetType().GetField("Label")?.GetValue(r) as System.Windows.Controls.TextBlock;
+            object? FindIn(List<object> rs, bool exact, string kw)
+            {
+                foreach (var r in rs)
+                {
+                    var t = LbOf(r)?.Text ?? "";
+                    if (exact ? t == kw : t.Contains(kw)) return r;
+                }
+                return null;
+            }
+            string FgOf(object? r) => r == null ? "-"
+                : (LbOf(r)!.Foreground as System.Windows.Media.SolidColorBrush)?.Color.ToString() ?? "-";
+
+            // 20.1 入口在设置页，且是暗红（不是「退出」用的橙 #FFF2A63B）
+            var setRows4 = RowsOn("settings", out _);
+            var entry = FindIn(setRows4, exact: false, "危险操作");
+            string entryFg = FgOf(entry);
+            Check("设置页有「危险操作」三级入口，字色暗红",
+                entry != null && entryFg == "#FFB8463C", $"{entryFg}（暗红 #FFB8463C）");
+
+            // 20.2 危险页：注释 0.4 秒就弹（普通项是 1.5 秒），文案要说清后果
+            var dRows4 = RowsOn("danger", out var dpw);
+            var dangerRow = FindIn(dRows4, exact: true, "初始化重置");
+            int delay = dangerRow == null ? 0
+                : (int)dangerRow.GetType().GetField("NoteDelayMs")!.GetValue(dangerRow)!;
+            string dNote = dangerRow?.GetType().GetField("Note")?.GetValue(dangerRow) as string ?? "";
+            Check("初始化重置的注释 0.4 秒弹出，且写明不可撤销",
+                delay == 400 && dNote.Contains("清零") && dNote.Contains("第三下"),
+                $"{delay}ms；{dNote}");
+
+            // 20.3 三态：第一下黄、第二下橙，两次都不能动数据
+            var click = tp4.GetMethod("ClickReset", NF4)!;
+            var resetRowFi = tp4.GetField("resetRow", NF4)!;
+            var stageFi = tp4.GetField("resetStage", NF4)!;
+            string BgNow()
+            {
+                var r1 = resetRowFi.GetValue(dpw)!;
+                var box = (System.Windows.Controls.Border)r1.GetType().GetField("Box")!.GetValue(r1)!;
+                return (box.Background as System.Windows.Media.SolidColorBrush)?.Color.ToString() ?? "-";
+            }
+            int Stage() => (int)stageFi.GetValue(dpw)!;
+
+            int layerBefore = g.S.Layer;
+            long killsBefore = g.S.TotalKills;
+            click.Invoke(dpw, null);
+            string bg1 = BgNow(); int st1 = Stage();
+            click.Invoke(dpw, null);
+            string bg2 = BgNow(); int st2 = Stage();
+            Check("第一下变黄、第二下变橙，且都还没执行",
+                bg1 == "#FFC9A227" && st1 == 1 && bg2 == "#FFD2721E" && st2 == 2
+                && g.S.Layer == layerBefore && g.S.TotalKills == killsBefore,
+                $"{bg1}/{st1} → {bg2}/{st2}；层仍为 {g.S.Layer}");
+
+            // 20.4 第三下才真的清零
+            click.Invoke(dpw, null);
+            Check("第三下执行重置：层数/等级/金币/墨晶/本命器/墨根全部归零",
+                g.Layer == 1 && g.Level == 1 && g.MaxLayer == 0 && g.S.Cycle == 1
+                && g.Gold.IsZero && g.Ink.IsZero && g.Exp.IsZero
+                && g.S.EnhBlade == 0 && g.S.EnhRobe == 0 && g.S.EnhEye == 0 && g.S.EnhSeal == 0
+                && g.S.Root == 0 && g.S.Rebirths == 0 && g.S.Bags.Count == 0,
+                $"第 {g.Layer} 层 · Lv{g.Level} · 金币 {Fmt.Large(g.Gold)} · 墨根 {g.S.Root}");
+
+            Check("重置同时恢复默认设置与统计",
+                g.S.ListenKeys && g.S.AutoDescend && g.S.AutoRetreat && g.S.BattleSeconds == 2
+                && g.S.TotalKeys == 0 && g.S.TotalKills == 0 && g.S.PlaySeconds == 0
+                && g.S.BoxesOpened == 0 && g.S.DailyKeys == 0 && g.S.DailyMask == 0,
+                $"监听 {g.S.ListenKeys} · 速度 {g.S.BattleSeconds}s · 敲击 {g.S.TotalKeys} · 礼包 {g.S.DailyMask}");
+
+            // 20.5 必须当场落盘，否则「重置完直接关进程」下次又会读回旧档
+            var dto = System.Text.Json.JsonSerializer.Deserialize<SaveDto>(File.ReadAllText(Game.SavePath));
+            Check("重置结果已落盘（重启不会读回旧档）",
+                dto != null && dto.Layer == 1 && dto.Level == 1 && dto.MaxLayer == 0
+                && dto.GoldM == 0 && dto.Root == 0,
+                $"文件里：第 {dto?.Layer} 层 · Lv{dto?.Level} · 墨根 {dto?.Root}");
+
+            // 20.6 执行后按钮回到常态（底纹清掉、字数复原），不会停在「最后确认」
+            Check("执行后按钮回到常态",
+                Stage() == 0 && BgNow() == "#00FFFFFF" && LbOf(resetRowFi.GetValue(dpw)!)?.Text == "初始化重置",
+                $"stage {Stage()} · 底色 {BgNow()} · 文案 {LbOf(resetRowFi.GetValue(dpw)!)?.Text}");
+        }
+        catch (Exception ex)
+        {
+            var e4 = ex.GetBaseException();
+            var tr4 = e4.StackTrace ?? "";
+            int nl4 = tr4.IndexOf('\n');
+            Check("初始化重置", false, "自测异常：" + e4.Message + " ＠ "
+                + (nl4 > 0 ? tr4[..nl4] : tr4).Trim());
+        }
+
         sb.AppendLine();
         sb.AppendLine($"RESULT pass={pass} fail={fail}");
         var outFile = Path.Combine(Path.GetTempPath(), "keyspirit_selftest.txt");
@@ -648,4 +836,7 @@ public static class SelfTest
     }
 
     static Big MobHp(Game g, int layer) => Game.MobHpOf(layer);
+
+    /// <summary>第 n 层单只经验（3.4），与 Game 内部同一个公式。</summary>
+    static Big MobExp(int layer) => Game.MobExp(layer);
 }

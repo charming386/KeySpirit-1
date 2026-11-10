@@ -66,6 +66,15 @@ public class PanelWindow : Window
     static readonly Brush Disabled = Fz(0x56, 0x60, 0x6A);
     static readonly Brush ShadowBrush = Fz(0x3A, 0x00, 0x00, 0x00);
 
+    // 危险操作的三态。颜色是「暗红字配亮底」而不是「亮红字配暗底」：
+    // 黄/橙底一定要够亮，才一眼看出「这一行已经不是普通按钮了」；
+    // 底变亮之后暗红字反而更清楚，所以字色只随底纹往深处走，不换成白。
+    static readonly Brush DangerFg = Fz(0xB8, 0x46, 0x3C);          // 常态：暗红（透明底）
+    static readonly Brush DangerBgYellow = Fz(0xC9, 0xA2, 0x27);    // 第一下：黄
+    static readonly Brush DangerFgOnYellow = Fz(0x6E, 0x1E, 0x14);  // 黄底上的深红
+    static readonly Brush DangerBgOrange = Fz(0xD2, 0x72, 0x1E);    // 第二下：橙
+    static readonly Brush DangerFgOnOrange = Fz(0x50, 0x12, 0x08);  // 橙底上的近黑红
+
     static readonly FontFamily Font = new("Segoe UI, Microsoft YaHei UI");
 
     static Brush Fz(byte r, byte g, byte b) => Fz(0xFF, r, g, b);
@@ -104,6 +113,11 @@ public class PanelWindow : Window
 
     string page = "";
     DateTime rebirthClickAt = DateTime.MinValue;
+
+    // 初始化重置的三态进度：0 常态 / 1 黄 / 2 橙。第三次点击才真的执行。
+    // 只在「设置 › 危险操作」这一页有意义，切页/重建一律清零，防止手滑留下半确认状态。
+    int resetStage;
+    Row? resetRow;
     readonly bool _keepOpen;
     double subWidth = W_SUB;
     bool subRight = false;              // 子列在右？（否则在左）
@@ -732,6 +746,7 @@ public class PanelWindow : Window
         string next = (!force && page == target) ? "" : target;
         if (next == page) return;
         CancelNote();
+        ResetDangerState();     // 换页就把半确认状态清掉，别让"已变橙"跨页留着
         page = next;
 
         UpdateAnchorY();
@@ -750,6 +765,7 @@ public class PanelWindow : Window
     static string PageKey(string page) => page switch
     {
         "layerInput" => "层数",          // 输入页没有独立主项，挂在「层数」名下（子列锚点也用它）
+        "danger" => "设置",              // 三级页同理，锚在「设置」那一行
         _ => page switch
         {
             "battle" => "战斗详情",
@@ -769,6 +785,7 @@ public class PanelWindow : Window
         // 子列内部变化（买了/强化/跳层）：只重建子列，主列控件与引用全部复用。
         // 同样不碰窗口几何：子列自己变高变矮，窗口包围盒是固定的。
         CancelNote();          // 重建后旧行已不在树上，气泡挂在它上面会指错地方
+        ResetDangerState();    // 旧行的底纹引用已经作废，进度不能留
         subRoot.Children.Clear();
         rows.Clear();
         rows.AddRange(mainRows);
@@ -932,6 +949,8 @@ public class PanelWindow : Window
     bool IsMainActive(string target) => target switch
     {
         "layers" => page == "layers" || page == "layerInput",
+        // 「危险操作」是「设置」的三级页，主列上仍然只有「设置」这一个入口亮着
+        "settings" => page == "settings" || page == "danger",
         _ => page == target,
     };
 
@@ -946,6 +965,7 @@ public class PanelWindow : Window
             case "ear": subWidth = W_SUB; SubTitle("本命四器"); BuildEar(); break;
             case "shop": subWidth = W_SUB; SubTitle("商店"); BuildShop(); break;
             case "settings": subWidth = W_SUB; SubTitle("设置"); BuildSettings(); break;
+            case "danger": subWidth = W_SUB; SubTitle("设置 › 危险操作"); BuildDanger(); break;
             default: subWidth = W_DETAIL; SubTitle("详情"); BuildDetail(); break;   // detail / stats
         }
         subRoot.Children.Add(BottomSpacer());   // 底部 4px 留白
@@ -1151,13 +1171,17 @@ public class PanelWindow : Window
     void BuildLayerMenu()
     {
         var s = Game.I;
-        Add(RowMake($"当前 第 {s.Layer} 层", $"本轮最高 {s.MaxLayer}", null, enabled: false));
+        // MaxLayer 在新建档时是 0（还没「通过」任何一层），直接显示会变成「本轮最高 0 层」
+        // 「前往已通最深层 第 0 层」——句子里出现第 0 层，看着像坏了。夹到 1 只是显示层的事：
+        // JumpTo 本来就会 clamp 到 [1, MaxLayer]，逻辑不用动。
+        int maxShown = Math.Max(1, s.MaxLayer);
+        Add(RowMake($"当前 第 {s.Layer} 层", $"本轮最高 {maxShown}", null, enabled: false));
         Add(RowMake("前往层数…", null, () => SwitchPage("layerInput", force: true)));
 
         Add(RowMake("↑ 上 10 层", null, () => { s.Step(10); RebuildSub(); }, enabled: s.Layer < s.MaxLayer));
         Add(RowMake("↓ 下 10 层", null, () => { s.Step(-10); RebuildSub(); }, enabled: s.Layer > 1));
 
-        Add(RowMake("前往已通最深层", $"第 {s.MaxLayer} 层",
+        Add(RowMake("前往已通最深层", $"第 {maxShown} 层",
             () => { s.JumpTo(s.MaxLayer); RebuildSub(); }, enabled: s.MaxLayer > s.Layer));
 
         Add(RowMake($"自动下潜 [{(s.S.AutoDescend ? "开" : "关")}]", null,
@@ -1347,19 +1371,19 @@ public class PanelWindow : Window
         rows.Add(info);
         Add(info);
 
-        int inkN = ShopCount(Game.InkPrice);
-        var inkCost = Big.Of((double)Game.InkPrice * inkN);
+        var inkN = ShopCount(Game.InkPrice);
+        var inkCost = Big.Of((double)Game.InkPrice) * inkN;
         // 行始终可点：金币是每秒涨的，「建行时买不起」不代表点下去时买不起。
         // 买不起时由 Tick 把文字置灰、提示写「金币不足」，点下去也只是空操作（BuyInk 自己会拦住）。
-        var buy = RowMake($"买墨晶 ×{ShopBatchText(inkN)}", $"{Fmt.Large(inkCost)} 金币",
+        var buy = RowMake($"买墨晶 ×{ShopQtyText(inkN)}", $"{Fmt.Large(inkCost)} 金币",
             () => { Game.I.BuyInk(ShopCount(Game.InkPrice)); RebuildSub(); },
             enabled: true, icon: "cur-inkcrystal");
         buy.Tick = () =>
         {
-            int n = ShopCount(Game.InkPrice);
-            var cost = Big.Of((double)Game.InkPrice * n);
-            bool ok = Game.I.Gold.CompareTo(cost) >= 0;
-            buy.Label.Text = $"买墨晶 ×{ShopBatchText(n)}";
+            var n = ShopCount(Game.InkPrice);
+            var cost = Big.Of((double)Game.InkPrice) * n;
+            bool ok = Game.I.Gold.CompareTo(cost) >= 0 && n.CompareTo(Big.Zero) > 0;
+            buy.Label.Text = $"买墨晶 ×{ShopQtyText(n)}";
             buy.Label.Foreground = ok ? Fg : Disabled;
             if (buy.Hint != null)
             {
@@ -1370,22 +1394,25 @@ public class PanelWindow : Window
         rows.Add(buy);
         Add(buy);
 
-        int shortfall = s.InkShortfall(0);
+        var shortfall = s.InkShortfall(0);
         Add(RowMake("补到够升墨刃",
-            shortfall > 0 ? $"差 {shortfall} 颗 · {shortfall * Game.InkPrice} 金币" : "已够",
-            () => { Game.I.FillToNext(0); RebuildSub(); }, enabled: shortfall > 0, icon: ""));
+            shortfall.CompareTo(Big.Zero) > 0
+                ? $"差 {Fmt.Large(shortfall)} 颗 · {Fmt.Large(shortfall * Game.InkPrice)} 金币"
+                : "已够",
+            () => { Game.I.FillToNext(0); RebuildSub(); },
+            enabled: shortfall.CompareTo(Big.Zero) > 0, icon: ""));
 
-        int boxN = ShopCount(250);
-        var boxCost = Big.Of(250.0 * boxN);
-        var open = RowMake($"开墨匣 ×{ShopBatchText(boxN)}", $"{Fmt.Large(boxCost)} 金币",
+        var boxN = ShopCount(250);
+        var boxCost = Big.Of(250.0) * boxN;
+        var open = RowMake($"开墨匣 ×{ShopQtyText(boxN)}", $"{Fmt.Large(boxCost)} 金币",
             () => { Game.I.OpenBox(ShopCount(250)); RebuildSub(); },
             enabled: true, icon: "box-ink");
         open.Tick = () =>
         {
-            int n = ShopCount(250);
-            var cost = Big.Of(250.0 * n);
-            bool ok = Game.I.Gold.CompareTo(cost) >= 0;
-            open.Label.Text = $"开墨匣 ×{ShopBatchText(n)}";
+            var n = ShopCount(250);
+            var cost = Big.Of(250.0) * n;
+            bool ok = Game.I.Gold.CompareTo(cost) >= 0 && n.CompareTo(Big.Zero) > 0;
+            open.Label.Text = $"开墨匣 ×{ShopQtyText(n)}";
             open.Label.Foreground = ok ? Fg : Disabled;
             if (open.Hint != null)
             {
@@ -1398,15 +1425,20 @@ public class PanelWindow : Window
     }
 
     /// <summary>当前档位下这一项买多少：正数照用；max(-1) = 金币买得起的最大数量。</summary>
-    static int ShopCount(int unitPrice)
+    /// <summary>
+    /// 当前档位下这一项买多少：正数照用；max(-1) = 金币买得起的最大数量（不封顶）。
+    /// 返回 Big 而不是 int：金币能到 1.8e+303，封在 int 上就出现「max 只有 1B」。
+    /// </summary>
+    static Big ShopCount(int unitPrice)
     {
-        var s = Game.I;
-        int b = s.S.ShopBatch;
-        if (b > 0) return b;
-        double afford = Math.Floor(s.Gold.ToDouble() / unitPrice);
-        if (afford < 1) return 1;
-        return (int)Math.Min(afford, 1000000000);      // 封顶 10 亿，避免超大数把 int 撑爆
+        int b = Game.I.S.ShopBatch;
+        if (b > 0) return Big.Of(b);
+        return Game.I.AffordCount(unitPrice);
     }
+
+    /// <summary>数量文案：固定档显示档位（1B），max 档显示算出来的真实数量。</summary>
+    static string ShopQtyText(Big n)
+        => Game.I.S.ShopBatch > 0 ? ShopBatchText(Game.I.S.ShopBatch) : Fmt.Large(n);
 
     static int NextShopBatch(int b) => b switch
     {
@@ -1449,6 +1481,97 @@ public class PanelWindow : Window
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Game.Dir) { UseShellExecute = true }); }
             catch { }
         }));
+
+        // 危险操作压在最底下：日常要用的都在上面，想改存档得先滑到底、再进一层。
+        // 「›」表示还有下一级，别让人以为点了就直接执行。
+        SectionRow("危险");
+        Add(RowMake("危险操作 ›", "初始化重置", () => SwitchPage("danger"),
+            fg: DangerFg,
+            note: "里面只有一个「初始化重置」：把存档恢复成刚下载的样子，全部清零。"
+                + "点进这一层还不会执行，要再点三次才生效"));
+    }
+
+    /// <summary>
+    /// 设置 › 危险操作（8.4.2）。整页只有一件事，之所以单独做成三级，
+    /// 就是为了让「主列 → 设置 → 危险操作 → 按钮」这四步挡掉手滑。
+    /// </summary>
+    void BuildDanger()
+    {
+        resetStage = 0;
+        Add(RowMake("‹ 返回设置", null, () => SwitchPage("settings")));
+
+        SectionRow("初始化重置");
+
+        // 400ms 就弹注释：普通项是 1.5 秒，这一项必须更快——它要拦的是"手已经按下去了"。
+        var row = RowMake("初始化重置", "全部清零", ClickReset,
+            fg: DangerFg,
+            noteDelayMs: 400,
+            note: "把存档恢复成刚下载时的样子：层数、等级、金币、墨晶、本命器、墨根、轮次、"
+                + "累计统计与全部设置一起清零，当天领过的礼包也会重新开放。"
+                + "点第一下底纹变黄（还没执行），第二下变橙（最后确认），第三下才真的清零；"
+                + "中途切页或关掉菜单，确认状态就作废。");
+        resetRow = row;
+        Add(row);
+
+        subRoot.Children.Add(Grey("这是全局唯一不可撤销的操作。黄 → 橙 → 执行，三下都点在同一个按钮上。"));
+    }
+
+    /// <summary>初始化重置的三段式确认。前两下只推进底纹，第三下才真的动手。</summary>
+    void ClickReset()
+    {
+        if (resetStage >= 2) { ExecuteReset(); return; }
+        resetStage++;
+        UpdateResetRow();
+    }
+
+    void UpdateResetRow()
+    {
+        if (resetRow == null) return;
+        resetRow.Tone = resetStage;
+        resetRow.Label.Text = resetStage switch
+        {
+            1 => "初始化重置 · 再点一次",
+            2 => "初始化重置 · 最后确认",
+            _ => "初始化重置",
+        };
+        if (resetRow.Hint != null)
+            resetRow.Hint.Text = resetStage switch { 1 => "还没执行", 2 => "点下即清零", _ => "全部清零" };
+        Paint(resetRow);
+    }
+
+    void ExecuteReset()
+    {
+        Game.I.ResetAll();     // 内含 Save()，重置完立刻落盘
+        RebuildSub();          // 重建顺带把 resetStage / resetRow 清回常态
+        Flash("已初始化重置，全部清零");
+    }
+
+    /// <summary>清掉半确认状态。切页、重建子列都要调，否则「已变橙」会挂到别的页面上。</summary>
+    void ResetDangerState()
+    {
+        resetStage = 0;
+        resetRow = null;
+    }
+
+    /// <summary>
+    /// 出图工具用：把重置按钮摆到第 N 档（0/1/2），只为拍三态配图。
+    /// **最高只到 2**——这里刻意不给"执行"的入口，出图路径永远不会真的清掉存档。
+    /// </summary>
+    internal void ShotResetTone(int stage)
+    {
+        if (resetRow == null) return;
+        resetStage = Math.Clamp(stage, 0, 2);
+        UpdateResetRow();
+    }
+
+    /// <summary>
+    /// 转生行右侧的提示。**确认态必须把「金币墨晶清零」摆出来**——
+    /// 转生是所有操作里唯一会拿走货币的，只在注释气泡里写（要停 1.5 秒才弹）等于没说。
+    /// </summary>
+    static string RebirthHint(bool confirm)
+    {
+        if (!Game.I.CanRebirth) return "需达 50 层";
+        return confirm ? "⚠ 金币墨晶清零" : "第 1 层重开";
     }
 
     void BuildDetail()
@@ -1460,9 +1583,12 @@ public class PanelWindow : Window
         {
             SectionRow("角色");
             DetailRow("等级", () => $"Lv {Game.I.Level} · 经验 {Fmt.Large(Game.I.Exp)} / {Fmt.Large(Game.I.ExpNeed)}");
-            DetailRow("生命", () => $"{Fmt.Large(Game.I.Hp)} / {Fmt.Large(Game.I.HpMax)}");
-            DetailRow("攻击", () => Fmt.Small(Game.I.PlayerAtk));
-            DetailRow("防御", () => Fmt.Small(Game.I.PlayerDef));
+            // 每级加点与「还差多少只怪」——升级不再是只涨一个乘区，面板上要看得见
+            DetailRow("每级", () => $"+{Game.LvAtkGain:0.#} 攻 · +{Game.LvHpGain:0.#} 血 · +{Game.LvDefGain:0.#} 防");
+            DetailRow("距下一级", () => $"约 {Game.I.ExpKills:0.#} 只同层小怪");
+            DetailRow("生命", () => $"{Fmt.Large(Game.I.Hp)} / {Fmt.Large(Game.I.HpMax)}（本体 {Fmt.Small(Game.I.BaseHp)}）");
+            DetailRow("攻击", () => $"{Fmt.Small(Game.I.PlayerAtk)}（本体 {Fmt.Small(Game.I.BaseAtk)}）");
+            DetailRow("防御", () => $"{Fmt.Small(Game.I.PlayerDef)}（本体 {Fmt.Small(Game.I.BaseDef)}）");
             DetailRow("暴击", () => $"{Fmt.Pct(Game.I.CritRate, 2)} · 暴伤 +{Fmt.Pct(Game.I.CritDmg, 0)}");
             DetailRow("墨根", () => $"{Game.I.S.Root} / {Limits.MaxSoul}（×{Fmt.Large(Big.Pow(1.06, Game.I.S.Root))}）");
             DetailRow("层数", () => $"第 {Game.I.Layer} 层 · 最高 {Game.I.MaxLayer} · 第 {Game.I.S.Cycle} 轮");
@@ -1474,21 +1600,22 @@ public class PanelWindow : Window
             var g = s.RebirthGain;
             bool confirm = (DateTime.UtcNow - rebirthClickAt).TotalSeconds < 10;
             string label = confirm ? $"⚠ 确认转生（+{g} 墨根）" : $"转生（+{g} 墨根）";
-            var rb = RowMake(label, s.CanRebirth ? "重置至第 1 层" : "需达 50 层", () =>
+            var rb = RowMake(label, RebirthHint(confirm), () =>
             {
                 if (!Game.I.CanRebirth) return;
                 if ((DateTime.UtcNow - rebirthClickAt).TotalSeconds >= 10) { rebirthClickAt = DateTime.UtcNow; RebuildSub(); return; }
                 Game.I.Rebirth();
+                Flash("转生完成：金币与墨晶已清零，本命器强化保留");
                 RebuildSub();
             }, enabled: s.CanRebirth, warn: true,
-               note: "重置层数与等级（回第 1 层 Lv1），本命器强化、金币、墨晶全部保留；"
-                   + "按本轮最高层换墨根，每点 +6% 全属性");
+               note: "转生会清空金币、墨晶与待领金币袋——喂进本命器的强化等级和墨根都保留，"
+                   + "所以转生前最好先把墨晶花掉。按本轮最高层换墨根，每点 +6% 全属性。");
             rb.Tick = () =>
             {
                 int gain = Game.I.RebirthGain;
                 bool c = (DateTime.UtcNow - rebirthClickAt).TotalSeconds < 10;
                 rb.Label.Text = c ? $"⚠ 确认转生（+{gain} 墨根）" : $"转生（+{gain} 墨根）";
-                if (rb.Hint != null) rb.Hint.Text = Game.I.CanRebirth ? "重置至第 1 层" : "需达 50 层";
+                if (rb.Hint != null) rb.Hint.Text = RebirthHint(c);
             };
             rows.Add(rb);
             Add(rb);
@@ -1526,8 +1653,16 @@ public class PanelWindow : Window
         public bool Hovered;
         /// <summary>这一项是不是"当前打开的那一页"。只有一项会返回 true。</summary>
         public Func<bool>? Active;
-        /// <summary>停满 1.5 秒弹出的注释；null 表示这一行不解释。</summary>
+        /// <summary>停满 N 毫秒弹出的注释；null 表示这一行不解释。</summary>
         public string? Note;
+        /// <summary>弹注释要停多久。默认 1500ms；危险项设得更短（400ms），因为它本来就该被拦住。</summary>
+        public int NoteDelayMs = 1500;
+        /// <summary>三态底纹：0 常态 / 1 黄 / 2 橙。只有「初始化重置」会用。</summary>
+        public int Tone;
+        /// <summary>标签的原始字色。Tone 归零时要还原，否则会停在深红上。</summary>
+        public Brush? FgDefault;
+        /// <summary>右侧提示的原始字色（默认 Dim）。黄底上灰字看不见，Tone 态同样要换色。</summary>
+        public Brush? HintFgDefault;
     }
 
     /// <summary>
@@ -1538,12 +1673,26 @@ public class PanelWindow : Window
     /// </summary>
     static void Paint(Row r)
     {
+        // 危险项的底纹优先于悬停与"当前页"高亮：它表达的是"你点了几下"，
+        // 这个信息不能被悬停色盖掉，否则第二下看起来和第一下一个样。
+        if (r.Tone > 0)
+        {
+            r.Box.Background = r.Tone == 1 ? DangerBgYellow : DangerBgOrange;
+            r.Label.Foreground = r.Tone == 1 ? DangerFgOnYellow : DangerFgOnOrange;
+            // 右侧提示本来是 Dim 灰，压在亮黄/亮橙上几乎看不见，跟着一起转深
+            if (r.Hint != null) r.Hint.Foreground = r.Tone == 1 ? DangerFgOnYellow : DangerFgOnOrange;
+            return;
+        }
+        r.Label.Foreground = r.FgDefault ?? Fg;
+        if (r.Hint != null) r.Hint.Foreground = r.HintFgDefault ?? Dim;
+
         bool on = r.Active?.Invoke() ?? false;
         r.Box.Background = on ? BgActive : (r.Hovered ? BgHover : Brushes.Transparent);
     }
 
     Row RowMake(string text, string? hint, Action? click, bool enabled = true, bool warn = false,
-                string? icon = null, bool small = false, string? note = null)
+                string? icon = null, bool small = false, string? note = null,
+                System.Windows.Media.Brush? fg = null, int noteDelayMs = 1500)
     {
         var grid = new Grid { Height = small ? ITEM_H_SM : ITEM_H };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1566,12 +1715,12 @@ public class PanelWindow : Window
             grid.Children.Add(img);
         }
 
-        var label = Text(text, small ? FS_TINY : FS_ITEM, enabled ? (warn ? Warn : Fg) : Disabled);
+        var label = Text(text, small ? FS_TINY : FS_ITEM, fg ?? (enabled ? (warn ? Warn : Fg) : Disabled));
         label.Margin = new Thickness(icon == null ? PAD_L : ICON_GAP, 0, 0, 0);
         Grid.SetColumn(label, col++);
         grid.Children.Add(label);
 
-        var row = new Row { Label = label };
+        var row = new Row { Label = label, FgDefault = label.Foreground, NoteDelayMs = noteDelayMs };
         if (hint != null)
         {
             var h = Text(hint, FS_HINT, Dim);
@@ -1579,6 +1728,7 @@ public class PanelWindow : Window
             Grid.SetColumn(h, 2);
             grid.Children.Add(h);
             row.Hint = h;
+            row.HintFgDefault = h.Foreground;
         }
 
         var box = new Border
@@ -1612,12 +1762,16 @@ public class PanelWindow : Window
 
     // ================= 注释气泡（8.4.1）=================
 
-    /// <summary>鼠标停在这一行上：重新计时。划过不弹、停满 1.5 秒才弹。</summary>
+    /// <summary>鼠标停在这一行上：重新计时。划过不弹、停满该行的 NoteDelayMs（默认 1.5 秒）才弹。</summary>
     void BeginNote(Row r, string text)
     {
         noteRow = r;
         noteText = text;
         noteTimer.Stop();
+        // 间隔按行走：危险项的 0.4 秒与普通项的 1.5 秒共用同一个计时器，
+        // 每次开始计时前重设间隔，省掉一个计时器也保证同一时刻只有一条气泡。
+        int ms = r.NoteDelayMs > 0 ? r.NoteDelayMs : 1500;
+        noteTimer.Interval = TimeSpan.FromMilliseconds(ms);
         noteTimer.Start();
     }
 

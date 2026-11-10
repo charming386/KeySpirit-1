@@ -160,9 +160,22 @@ public class Game
     Big LvMul => Big.Of(1 + 0.015 * (S.Level - 1));
     Big RootMul => Big.Pow(1.06, S.Root);
 
-    Big CalcAtk() => Big.Clamp(((Big.Pow(1.06, S.EnhBlade) * 10) + Big.Of(10)) * LvMul * RootMul);
-    Big CalcHp() => Big.Clamp(((Big.Pow(1.06, S.EnhRobe) * 80) + Big.Of(100)) * LvMul * RootMul);
-    Big CalcDef() => Big.Clamp(((Big.Pow(1.06, S.EnhSeal) * 4) + Big.Of(3)) * LvMul * RootMul);
+    // ---- 等级加点（v0.13.0）----
+    // 等级不再只是乘区：每级直接给基础攻/血/防加一点「本体数值」。
+    // 量级刻意做小（占后期总属性千分之一以下），作用是**让"升级"在属性面板上有个看得见的东西**，
+    // 前 50 层（基础值就是全部）时这点加成是实打实的强度。真正的长线增长仍靠乘区。
+    public const double LvAtkGain = 1.0;
+    public const double LvHpGain = 10.0;
+    public const double LvDefGain = 0.5;
+
+    /// <summary>基础攻击 = 10 + 每级加点（未乘等级乘区/墨根，供面板拆解用）。</summary>
+    public Big BaseAtk => Big.Clamp(Big.Of(10 + LvAtkGain * (S.Level - 1)));
+    public Big BaseHp => Big.Clamp(Big.Of(100 + LvHpGain * (S.Level - 1)));
+    public Big BaseDef => Big.Clamp(Big.Of(3 + LvDefGain * (S.Level - 1)));
+
+    Big CalcAtk() => Big.Clamp((Big.Pow(1.06, S.EnhBlade) * 10 + BaseAtk) * LvMul * RootMul);
+    Big CalcHp() => Big.Clamp((Big.Pow(1.06, S.EnhRobe) * 80 + BaseHp) * LvMul * RootMul);
+    Big CalcDef() => Big.Clamp((Big.Pow(1.06, S.EnhSeal) * 4 + BaseDef) * LvMul * RootMul);
 
     /// <summary>暴击率 2% + 墨眸 0.15%/级，60% 封顶，超出转暴伤。</summary>
     public double CritRate
@@ -182,7 +195,27 @@ public class Game
         }
     }
 
-    public Big ExpNeed => Big.Clamp(Big.Of(40) * Big.Pow(S.Level, 1) * Big.Of(Math.Pow(S.Level, 0.35)));
+    // ---- 等级与经验（4.1，v0.13.0 重做）----
+    /// <summary>升级需求 = 「本轮最高层」单只经验 × 需要的只数。基础只数。</summary>
+    public const double ExpKillsBase = 2.0;
+    /// <summary>需要只数随层数的增长系数：k = 2 + 0.58√层。</summary>
+    public const double ExpKillsSlope = 0.58;
+
+    /// <summary>
+    /// 算需求用的层数：取**本轮到达过的最高层**，不是当前层。
+    /// 用当前层的话，退回第 1 层可以「1 级 / 2.6 只怪」无限刷级——这条线必须只增不减。
+    /// </summary>
+    public int ExpLayer => Math.Max(1, Math.Max(S.Layer, S.MaxLayer));
+
+    /// <summary>升一级大约要打几只同层小怪（精英 1.5×、守层者 3× 折算）。</summary>
+    public double ExpKills => ExpKillsBase + ExpKillsSlope * Math.Sqrt(ExpLayer);
+
+    /// <summary>
+    /// 升级所需经验：第 1 层约 2.6 只小怪一级，300 层约 12 只（≈一层），
+    /// 3000 层约 34 只（≈两三层）。**难度只增不减**，不会再出现后期一只怪连升几千级。
+    /// </summary>
+    public Big ExpNeed => Big.Clamp(MobExp(ExpLayer) * ExpKills);
+
 
     public double LayerProgress => MobIndex / 10.0;
 
@@ -354,6 +387,17 @@ public class Game
     /// <summary>掉落一袋所需敲击数（第七章：300 键 = 1 袋）。</summary>
     public const int BagKeys = 300;
 
+    /// <summary>
+    /// 一个金币袋折合多少只同层怪的金币（第七章）。
+    /// 原为 5.0，实测打字收入过重（300 键 ≈ 半层战斗收入），按需求**减半为 2.5**。
+    /// 只砍袋值，不改掉率（300 键一袋）与品质倍率（×1 / ×2.5 / ×6）。
+    /// </summary>
+    public const double BagMobMul = 2.5;
+
+    /// <summary>单袋金币（含等级乘区与品质倍率）。袋值与每日礼包共用同一把尺子。</summary>
+    public Big BagValue(double mult)
+        => Big.Clamp(MobGold(S.Layer) * BagMobMul * (1 + 0.015 * (S.Level - 1)) * mult);
+
     // ---- 每日敲击（4.x / 7.x）----
     /// <summary>每日礼包档位。索引即 <see cref="SaveDto.DailyMask"/> 的位序。</summary>
     public static readonly int[] DailyTiers = { 5000, 20000 };
@@ -382,7 +426,7 @@ public class Game
     public bool DailyClaimed(int tier)
         => tier >= 0 && tier < DailyTiers.Length && (S.DailyMask & (1 << tier)) != 0;
 
-    /// <summary>礼包金币：按当前层单只金币缩放，与金币袋同一把尺子（1 袋 = 5 只怪，同样吃等级乘区）。</summary>
+    /// <summary>礼包金币：按当前层单只金币缩放，与金币袋同一把尺子（1 袋 = 2.5 只怪，同样吃等级乘区）。</summary>
     public Big DailyGold(int tier)
         => Big.Clamp(MobGold(S.Layer) * (tier == 0 ? 60 : 240) * (1 + 0.015 * (S.Level - 1)));
 
@@ -423,7 +467,7 @@ public class Game
 
         double tier = Rng.NextDouble();
         double mult = tier < 0.70 ? 1 : tier < 0.95 ? 2.5 : 6;
-        var baseVal = MobGold(S.Layer) * 5 * (1 + 0.015 * (S.Level - 1)) * mult;        var val = Big.Clamp(baseVal);
+        var val = BagValue(mult);
         if (S.Bags.Count >= 20)
         {
             AddGold(val * 0.3);
@@ -459,8 +503,16 @@ public class Game
     // ---- 本命器强化（5.3）----
     public static double EnhFactor(int which) => which switch { 0 => 1.00, 1 => 0.70, 2 => 0.85, _ => 0.70 };
 
+    /// <summary>
+    /// 每级成本倍率。v0.13.0 由 1.062 上调到 **1.07**：
+    /// 原值只比金币收入（×1.06/层）快 0.2%，等级乘区一补就把差距吃掉，等于没有墙；
+    /// 1.07 让每 10 级相对变弱约 9%，玩家才真的会在某个层数停下来考虑转生。
+    /// </summary>
+    public const double EnhRate = 1.07;
+    const double EnhRateMinus1 = EnhRate - 1;
+
     public Big EnhCost(int which, int level)
-        => Big.Clamp(Big.Pow(1.062, level - 1) * (2 * EnhFactor(which)));
+        => Big.Clamp(Big.Pow(EnhRate, level - 1) * (2 * EnhFactor(which)));
 
     public int EnhLevel(int which) => which switch
     {
@@ -488,7 +540,7 @@ public class Game
         // 强化只抬上限，**不回血**：原来这里 `Hp = HpMax`，等于每点一次强化就满血，
         // 连点几下就是无限续航（力竭之前点一下直接回满）。上限涨了、当前值留在原处，
         // 缺口按比例变大 —— 这才是「变强但不送血」。
-        // （等级提升（AddExp）仍然回满，那是设计稿 13.x 写明的"升级回满血"，与本条无关。）
+        // （升级（AddExp）同样只抬上限、不回血，见 4.x；会回满的只有转生与休整结束。）
         HpMax = CalcHp();
         if (Hp.CompareTo(HpMax) > 0) Hp = HpMax;
         Changed?.Invoke();
@@ -503,8 +555,8 @@ public class Game
         if (lv >= Limits.MaxEnhance) return Big.Zero;
         if (lv + times > Limits.MaxEnhance) times = Limits.MaxEnhance - lv;
         var c1 = EnhCost(which, lv + 1);                        // 首级成本
-        var rn = Big.Pow(1.062, times);
-        return Big.Clamp(c1 * ((rn - Big.Of(1)) / 0.062));
+        var rn = Big.Pow(EnhRate, times);
+        return Big.Clamp(c1 * ((rn - Big.Of(1)) / EnhRateMinus1));
     }
 
     /// <summary>连升 n 级；返回实际升了几级（墨晶不够或到顶就停）。</summary>
@@ -529,7 +581,7 @@ public class Game
         // 等比级数反解：ink ≥ c1·(r^n − 1)/(r − 1)
         double c1 = 2 * EnhFactor(which);
         double ink = Ink.ToDouble();
-        double n = Math.Log(1 + ink * 0.062 / c1) / Math.Log(1.062);
+        double n = Math.Log(1 + ink * EnhRateMinus1 / c1) / Math.Log(EnhRate);
         int k = (int)Math.Floor(n);
         if (k < 0) k = 0;
         if (k > room) k = room;
@@ -560,33 +612,58 @@ public class Game
 
     // ---- 商店（5.7）----
     public const int InkPrice = 25;
-    public bool BuyInk(int count)
+
+    /// <summary>
+    /// 「max」档到底是多少：把当前金币全花光能买的颗数。
+    /// 金币是 Big（1.8e+303 封顶），所以数量也用 Big —— 早先按 int 封顶 10 亿，
+    /// 到中期就变成「max 反而不 max」，玩家看到的 ×1B 是个假的 max。
+    /// </summary>
+    public Big AffordCount(double unitPrice)
     {
-        var cost = Big.Of((double)InkPrice * count);
+        if (unitPrice <= 0) return Big.Zero;
+        double d = Gold.ToDouble() / unitPrice;
+        if (double.IsNaN(d) || d < 1) return Big.Zero;
+        var n = Big.Of(Math.Floor(d));
+        // 浮点除法可能多算出一颗，往下退到真的买得起为止（差千分之一看不出来）
+        var p = Big.Of(unitPrice);
+        for (int i = 0; i < 6 && p * n > Gold; i++) n = n * 0.9999;
+        return p * n > Gold ? Big.Zero : n;
+    }
+
+    public bool BuyInk(int count) => BuyInk(Big.Of(count));
+
+    public bool BuyInk(Big count)
+    {
+        var cost = Big.Of((double)InkPrice) * count;
+        if (count.CompareTo(Big.Of(1)) < 0) return false;
         if (Gold.CompareTo(cost) < 0) return false;
         var g = Gold - cost;
         S.GoldM = g.M; S.GoldE = g.E;
-        AddInk(Big.Of(count));
+        AddInk(count);
         Changed?.Invoke();
         return true;
     }
 
-    public int InkShortfall(int which)
+    /// <summary>
+    /// 离下一级还差多少墨晶。返回 Big：墨刃升到 300 级以上时单价就过 20 亿了，
+    /// 早先按 int 返回会直接溢出成负数，界面上变成「已够」但其实差着一大截。
+    /// </summary>
+    public Big InkShortfall(int which)
     {
-        if (EnhLevel(which) >= Limits.MaxEnhance) return 0;
+        if (EnhLevel(which) >= Limits.MaxEnhance) return Big.Zero;
         var cost = EnhCost(which, EnhLevel(which) + 1);
-        double need = cost.ToDouble() - Ink.ToDouble();
-        if (need <= 0) return 0;
-        return (int)Math.Ceiling(need);
+        var need = cost - Ink;
+        return need.CompareTo(Big.Zero) > 0 ? need : Big.Zero;
     }
 
     public void FillToNext(int which)
     {
-        int need = InkShortfall(which);
-        if (need <= 0) return;
-        int afford = (int)Math.Floor(Gold.ToDouble() / InkPrice);
-        int buy = Math.Min(need, afford);
-        if (buy > 0) BuyInk(buy);
+        var need = InkShortfall(which);
+        if (need.CompareTo(Big.Zero) <= 0) return;
+        var afford = AffordCount(InkPrice);
+        var buy = Big.Min(need + Big.Of(1), afford);   // +1 收掉浮点零头，免得点完还差一丝
+        if (buy.CompareTo(Big.Of(1)) < 0) return;
+        BuyInk(buy);
     }
 
     /// <summary>墨匣：250 金币，7 档概率（期望 87%）。</summary>
@@ -597,29 +674,38 @@ public class Game
         (0.02, true, 60),
     };
 
-    public string? OpenBox(int count)
+    public string? OpenBox(int count) => OpenBox(Big.Of(count));
+
+    public string? OpenBox(Big count)
     {
-        if (count <= 0) return null;
-        var cost = Big.Of(250.0 * count);
+        if (count.CompareTo(Big.Of(1)) < 0) return null;
+        var cost = Big.Of(250.0) * count;
         if (Gold.CompareTo(cost) < 0) return "金币不足";
         var g = Gold - cost;
         S.GoldM = g.M; S.GoldE = g.E;
-        S.BoxesOpened += count;
+
+        // 「开匣次数」是 long 统计量：max 档在金极多时一次开的是天文数字，饱和而不是溢出
+        double dc = count.ToDouble();
+        long add = dc >= long.MaxValue - S.BoxesOpened
+            ? long.MaxValue - S.BoxesOpened
+            : (long)Math.Round(dc);
+        S.BoxesOpened += add;
 
         var hits = RollBoxes(count);
 
-        double gold = 0, ink = 0;
+        var gold = Big.Zero;
+        var ink = Big.Zero;
         for (int i = 0; i < BoxTable.Length; i++)
         {
-            if (hits[i] == 0) continue;
-            double amt = BoxTable[i].amount * (double)hits[i];
-            if (BoxTable[i].isInk) { AddInk(Big.Of(amt)); ink += amt; }
-            else { AddGold(Big.Of(amt)); gold += amt; }
+            if (hits[i] <= 0) continue;
+            var amt = Big.Of(BoxTable[i].amount) * Big.Of(hits[i]);
+            if (BoxTable[i].isInk) { AddInk(amt); ink = ink + amt; }
+            else { AddGold(amt); gold = gold + amt; }
         }
 
         Changed?.Invoke();
 
-        if (count == 1)
+        if (count.CompareTo(Big.Of(2)) < 0)
         {
             // 单开保留原来的逐档文案（"末档"这种说法对一匣没意义）
             for (int i = 0; i < BoxTable.Length; i++)
@@ -629,9 +715,9 @@ public class Game
         }
 
         var part = new List<string>();
-        if (gold > 0) part.Add("金币 +" + Fmt.Large(Big.Of(gold)));
-        if (ink > 0) part.Add("墨晶 +" + Fmt.Large(Big.Of(ink)));
-        string brief = $"{count} 匣：" + string.Join(" · ", part);
+        if (gold.CompareTo(Big.Zero) > 0) part.Add("金币 +" + Fmt.Large(gold));
+        if (ink.CompareTo(Big.Zero) > 0) part.Add("墨晶 +" + Fmt.Large(ink));
+        string brief = $"{Fmt.Large(count)} 匣：" + string.Join(" · ", part);
         Log.Write(brief);
         return brief;
     }
@@ -639,15 +725,18 @@ public class Game
     /// <summary>
     /// 掷 n 个墨匣，返回每一档命中的次数（只管抽，不发放奖励）。
     /// n 小时逐次抽；n 大时改用多项分布的正态近似 —— 2000 次以上时两者在统计上
-    /// 不可分辨，但耗时恒定，否则 ×1B 档会把界面冻死。
+    /// 不可分辨，但耗时恒定，否则 max 档一次开上亿个会把界面冻死。
+    /// 计数用 double 而不是 long：max 档的数量跟着金币走，能到 1e+300。
     /// </summary>
-    static long[] RollBoxes(int n)
+    static double[] RollBoxes(Big count)
     {
         int m = BoxTable.Length;
-        var hits = new long[m];
+        var hits = new double[m];
 
-        if (n <= 2000)
+        if (count.CompareTo(Big.Of(2000)) <= 0)
         {
+            int n = (int)Math.Round(count.ToDouble());
+            if (n < 0) n = 0;
             for (int i = 0; i < n; i++)
             {
                 double r = Rng.NextDouble(), acc = 0;
@@ -660,26 +749,28 @@ public class Game
             return hits;
         }
 
+        double nn = count.ToDouble();
         var v = new double[m];
         double sum = 0;
         for (int k = 0; k < m; k++)
         {
-            double mu = n * BoxTable[k].p;
+            double mu = nn * BoxTable[k].p;
             double sd = Math.Sqrt(mu * (1 - BoxTable[k].p));
             double x = mu + sd * Gaussian();
             if (x < 0) x = 0;
             v[k] = x;
             sum += x;
         }
-        if (sum <= 0) { hits[0] = n; return hits; }
+        if (sum <= 0) { hits[0] = nn; return hits; }
 
-        long assigned = 0;
-        for (int k = 0; k < m; k++)
+        // 先算占比再乘总数：v[k]*n 在 n≈1e300 时会溢出成 inf
+        double others = 0;
+        for (int k = 1; k < m; k++)
         {
-            hits[k] = (long)Math.Round(v[k] * n / sum);
-            assigned += hits[k];
+            hits[k] = v[k] / sum * nn;
+            others += hits[k];
         }
-        hits[0] += n - assigned;                      // 四舍五入的零头补回第一档（通常只差个位数）
+        hits[0] = nn - others;                        // 零头补回第一档（通常只差个位数）
         if (hits[0] < 0) hits[0] = 0;
         return hits;
     }
@@ -696,18 +787,39 @@ public class Game
     public bool CanRebirth => S.MaxLayer >= 50;
     public int RebirthGain => Math.Max(1, (int)Math.Floor(0.35 * S.MaxLayer));
 
+    /// <summary>
+    /// 转生。界线是「能不能带走」：**现金没收，投入保留**。
+    ///
+    /// 金币、墨晶、待领金币袋清零；四件强化等级、墨根、统计、设置、每日领取位全部保留。
+    /// 理由是喂进强化里的墨晶已经变成永久等级，那属于「投入」；而躺在账上的钱是「现金」，
+    /// 它随着重推的指数收入会迅速缩成零头，留着只会让转生少一层"从头再来"的分量。
+    /// 顺带逼出一步正经决策：转生前把墨晶全喂进强化，带不走的才不该剩。
+    ///
+    /// 待领金币袋必须一起清：袋子是按当前层算好值的，留着等于让玩家转生后领走旧层的钱。
+    /// </summary>
     public void Rebirth()
     {
         if (!CanRebirth) return;
         int gain = RebirthGain;
         S.Root = Math.Min(Limits.MaxSoul, S.Root + gain);
         S.Rebirths++;
+
+        // 先记账再清零：日志里要留一行「清了多少」，否则玩家事后无法核对，
+        // 只会记得"我转生之后钱没了"。
+        var goldBefore = Gold;
+        var inkBefore = Ink;
+        int bagN = S.Bags.Count;
+        S.GoldM = 0; S.GoldE = 0;
+        S.InkM = 0; S.InkE = 0;
+        S.Bags.Clear();
+
         S.Layer = 1; S.MaxLayer = 0; S.Level = 1;
         S.ExpM = 0; S.ExpE = 0;
         ConsecutiveLoss = 0;
         Resting = false;
         ResetFight();
-        Log.Write($"转生：墨根 +{gain}（累计 {S.Root}）");
+        Log.Write($"转生：墨根 +{gain}（累计 {S.Root}）· 清零金币 {Fmt.Large(goldBefore)} / 墨晶 {Fmt.Large(inkBefore)}"
+                  + (bagN > 0 ? $" / 金币袋 ×{bagN}" : ""));
         Changed?.Invoke();
     }
 
@@ -732,6 +844,38 @@ public class Game
     {
         S.Paused = !S.Paused;
         Status = S.Paused ? "暂停" : "战斗中";
+        Changed?.Invoke();
+    }
+
+    // ---- 初始化重置（设置 › 危险操作 › 初始化重置）----
+
+    /// <summary>
+    /// 把存档恢复成「刚下载」的样子。
+    ///
+    /// 做法是整份 <see cref="SaveDto"/> 换新对象，而不是逐字段清零 —— 逐字段清最容易漏，
+    /// 以后往 SaveDto 加字段时还得记得回来补一行。新对象的属性默认值就是新档该有的值
+    /// （第 1 层、Lv1、无金币墨晶、设置全开、各项统计 0）。
+    ///
+    /// 重置完**立刻落盘**：否则玩家重置后直接结束进程，下次启动又会读回旧档，
+    /// 表现成「重置没生效」。
+    /// </summary>
+    public void ResetAll()
+    {
+        S = new SaveDto();
+
+        // 运行期状态不在 SaveDto 里，得单独归零，否则界面上还挂着旧的血量/怪物/力竭
+        HpMax = CalcHp();
+        Hp = HpMax;
+        MobIndex = 1;
+        Resting = false;
+        RestUntil = DateTime.MinValue;
+        ConsecutiveLoss = 0;
+        roundAccum = 0;
+        Status = "战斗中";
+        SpawnMob();
+
+        Save();
+        Log.Write("初始化重置：存档已恢复为初始状态（层数/等级/金币/墨晶/本命器/墨根/统计/设置全部清零）");
         Changed?.Invoke();
     }
 
