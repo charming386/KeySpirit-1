@@ -173,27 +173,34 @@ public class Game
     public Big BaseHp => Big.Clamp(Big.Of(100 + LvHpGain * (S.Level - 1)));
     public Big BaseDef => Big.Clamp(Big.Of(3 + LvDefGain * (S.Level - 1)));
 
-    Big CalcAtk() => Big.Clamp((Big.Pow(1.06, S.EnhBlade) * 10 + BaseAtk) * LvMul * RootMul);
-    Big CalcHp() => Big.Clamp((Big.Pow(1.06, S.EnhRobe) * 80 + BaseHp) * LvMul * RootMul);
-    Big CalcDef() => Big.Clamp((Big.Pow(1.06, S.EnhSeal) * 4 + BaseDef) * LvMul * RootMul);
+    /// <summary>
+    /// 「假如这一件已经到 lv 级」时的最终属性：**本体值 + 强化 + 等级乘区 + 墨根乘区**，一份齐全。
+    ///
+    /// 面板的强化预览行必须走这三个方法。旧版面板自己写了 `Big.Pow(1.06, lv) * 10`，
+    /// 只算了强化那一项 —— 同一块屏幕上强化页写「攻击 3.0B」、角色页写「攻击 35.0B」，
+    /// 差的正是等级乘区（×11.65）；转生之后还会再差一个墨根乘区（墨根 50 时 ×214）。
+    /// 这类「面板自己抄一遍公式」的错已经不是第一次了（暴击封顶也是同一个毛病）。
+    /// </summary>
+    public Big AtkIfBlade(int lv) => Big.Clamp((Big.Pow(1.06, lv) * 10 + BaseAtk) * LvMul * RootMul);
+    public Big HpIfRobe(int lv) => Big.Clamp((Big.Pow(1.06, lv) * 80 + BaseHp) * LvMul * RootMul);
+    public Big DefIfSeal(int lv) => Big.Clamp((Big.Pow(1.06, lv) * 4 + BaseDef) * LvMul * RootMul);
 
-    /// <summary>暴击率 2% + 墨眸 0.15%/级，60% 封顶，超出转暴伤。</summary>
-    public double CritRate
-    {
-        get
-        {
-            double raw = 0.02 + 0.0015 * S.EnhEye;
-            return Math.Min(0.60, raw);
-        }
-    }
-    public double CritDmg
-    {
-        get
-        {
-            double raw = 0.02 + 0.0015 * S.EnhEye;
-            return 0.5 + Math.Max(0, raw - 0.60) * 1.0;
-        }
-    }
+    Big CalcAtk() => AtkIfBlade(S.EnhBlade);
+    Big CalcHp() => HpIfRobe(S.EnhRobe);
+    Big CalcDef() => DefIfSeal(S.EnhSeal);
+
+    /// <summary>
+    /// 暴击率 = 2% + 墨眸 0.15%/级，60% 封顶。
+    /// **面板与实战共用这一份**：旧版面板自己写成 `0.02 + 0.0015×lv` 没封顶，
+    /// 墨眸过 387 级后行内会显示 62%、66% 这种根本不可能出现的暴击率。
+    /// </summary>
+    public static double CritRateOf(int eyeLv) => Math.Min(0.60, 0.02 + 0.0015 * eyeLv);
+
+    /// <summary>暴伤：基础 +50%；封顶后溢出的暴击率按 1:1 转成暴伤（每级 +0.15 个百分点）。</summary>
+    public static double CritDmgOf(int eyeLv) => 0.5 + Math.Max(0, 0.02 + 0.0015 * eyeLv - 0.60);
+
+    public double CritRate => CritRateOf(S.EnhEye);
+    public double CritDmg => CritDmgOf(S.EnhEye);
 
     // ---- 等级与经验（4.1，v0.13.0 重做）----
     /// <summary>升级需求 = 「本轮最高层」单只经验 × 需要的只数。基础只数。</summary>
@@ -306,6 +313,10 @@ public class Game
     void KillMob()
     {
         S.TotalKills++;
+        // 打赢一只就算「没在连败」——自动回退判的是**连败** 3 次，
+        // 旧版这里漏了清零，实际变成「累计 3 次力竭」，中间赢多少只都拦不住。
+        ConsecutiveLoss = 0;
+
         var g = MobGold(S.Layer);
         var e = MobExp(S.Layer);
         var ink = Big.Zero;
@@ -315,21 +326,20 @@ public class Game
         AddInk(ink);
         AddExp(e);
 
-        bool wasKeeper = MobIndex == 10;
         MobIndex++;
         if (MobIndex > 10)
         {
-            if (S.Layer < Limits.MaxLayer)
-            {
-                S.Layer++;
-                if (S.Layer > S.MaxLayer) S.MaxLayer = S.Layer;
-            }
-            MobIndex = 1;
+            // 打赢守层者 = 本层已通。这跟「要不要继续往下走」是两件事：
+            // 定层驻守时也得把本层记进 MaxLayer，否则界面上「本轮最高」永远差一层，
+            // 刚开局就锁在第 1 层的话更是永远停在 0。
+            if (S.Layer > S.MaxLayer) S.MaxLayer = S.Layer;
+
+            // 只有「自动下潜 且 未锁层」才往下走。旧版这里是无条件 S.Layer++，
+            // 所谓「定层驻守」根本锁不住——打完第 10 只照样被推到下一层。
+            if (S.AutoDescend && !S.LockLayer && S.Layer < Limits.MaxLayer) S.Layer++;
             if (S.Layer >= Limits.MaxLayer) S.Layer = Limits.MaxLayer;
-        }
-        else if (wasKeeper && S.AutoDescend && !S.LockLayer)
-        {
-            // 守层者击杀后自动下潜由上面的层数推进完成
+
+            MobIndex = 1;
         }
         SpawnMob();
         Changed?.Invoke();
@@ -817,6 +827,8 @@ public class Game
         S.ExpM = 0; S.ExpE = 0;
         ConsecutiveLoss = 0;
         Resting = false;
+        RestUntil = DateTime.MinValue;
+        bagCounter = 0;          // 袋值按当前层算，转生回第 1 层就不该带着旧层的敲击进度
         ResetFight();
         Log.Write($"转生：墨根 +{gain}（累计 {S.Root}）· 清零金币 {Fmt.Large(goldBefore)} / 墨晶 {Fmt.Large(inkBefore)}"
                   + (bagN > 0 ? $" / 金币袋 ×{bagN}" : ""));
@@ -871,6 +883,7 @@ public class Game
         RestUntil = DateTime.MinValue;
         ConsecutiveLoss = 0;
         roundAccum = 0;
+        bagCounter = 0;
         Status = "战斗中";
         SpawnMob();
 

@@ -1184,11 +1184,24 @@ public class PanelWindow : Window
         Add(RowMake("前往已通最深层", $"第 {maxShown} 层",
             () => { s.JumpTo(s.MaxLayer); RebuildSub(); }, enabled: s.MaxLayer > s.Layer));
 
-        Add(RowMake($"自动下潜 [{(s.S.AutoDescend ? "开" : "关")}]", null,
-            () => { s.S.AutoDescend = !s.S.AutoDescend; RebuildSub(); }));
+        // 「自动下潜」与「锁定本层」是同一件事的正反面（设计稿 3.7.1）：开任意一个，另一个自动跟随。
+        // 旧版两个开关各改各的字段，点「锁定本层」并不会关掉自动下潜，
+        // 于是「钉死在这一层」从来没真正生效过——打赢守层者照样被推下去。
+        Add(RowMake($"自动下潜 [{(s.S.AutoDescend ? "开" : "关")}]", s.S.AutoDescend ? null : "钉住本层",
+            () =>
+            {
+                s.S.AutoDescend = !s.S.AutoDescend;
+                s.S.LockLayer = !s.S.AutoDescend;
+                RebuildSub();
+            }));
 
-        var lockRow = RowMake($"锁定本层 [{(s.S.LockLayer ? "开" : "关")}]", null,
-            () => { s.S.LockLayer = !s.S.LockLayer; RebuildSub(); });
+        var lockRow = RowMake($"锁定本层 [{(s.S.LockLayer ? "开" : "关")}]", s.S.LockLayer ? "钉住本层" : null,
+            () =>
+            {
+                s.S.LockLayer = !s.S.LockLayer;
+                s.S.AutoDescend = !s.S.LockLayer;
+                RebuildSub();
+            });
         lockRow.Tick = () => lockRow.Label.Text = $"锁定本层 [{(Game.I.S.LockLayer ? "开" : "关")}]";
         rows.Add(lockRow);
         Add(lockRow);
@@ -1329,23 +1342,44 @@ public class PanelWindow : Window
     /// </summary>
     static string EffectText(int idx, int lv, int gain)
     {
+        var g = Game.I;
         int to = lv + Math.Max(0, gain);
         bool preview = gain > 0;
         return idx switch
         {
+            // 一律走 Game.AtkIfBlade / HpIfRobe / DefIfSeal，拿到的是**最终属性**
+            // （本体 + 强化 + 等级乘区 + 墨根乘区），跟角色页同一份口径。
             0 => preview
-                ? $"　　攻击 {Fmt.Small(Big.Pow(1.06, lv) * 10)} → {Fmt.Small(Big.Pow(1.06, to) * 10)}"
-                : $"　　攻击 {Fmt.Small(Big.Pow(1.06, lv) * 10)}",
+                ? $"　　攻击 {Fmt.Small(g.AtkIfBlade(lv))} → {Fmt.Small(g.AtkIfBlade(to))}"
+                : $"　　攻击 {Fmt.Small(g.AtkIfBlade(lv))}",
             1 => preview
-                ? $"　　生命 {Fmt.Small(Big.Pow(1.06, lv) * 80)} → {Fmt.Small(Big.Pow(1.06, to) * 80)}"
-                : $"　　生命 {Fmt.Small(Big.Pow(1.06, lv) * 80)}",
-            2 => preview
-                ? $"　　暴击 {Fmt.Pct(0.02 + 0.0015 * lv, 2)} → {Fmt.Pct(0.02 + 0.0015 * to, 2)}"
-                : $"　　暴击 {Fmt.Pct(0.02 + 0.0015 * lv, 2)}",
+                ? $"　　生命 {Fmt.Small(g.HpIfRobe(lv))} → {Fmt.Small(g.HpIfRobe(to))}"
+                : $"　　生命 {Fmt.Small(g.HpIfRobe(lv))}",
+            2 => CritText(lv, to, preview),
             _ => preview
-                ? $"　　防御 {Fmt.Small(Big.Pow(1.06, lv) * 4)} → {Fmt.Small(Big.Pow(1.06, to) * 4)}"
-                : $"　　防御 {Fmt.Small(Big.Pow(1.06, lv) * 4)}",
+                ? $"　　防御 {Fmt.Small(g.DefIfSeal(lv))} → {Fmt.Small(g.DefIfSeal(to))}"
+                : $"　　防御 {Fmt.Small(g.DefIfSeal(lv))}",
         };
+    }
+
+    /// <summary>
+    /// 墨眸的预览文案。暴击率 60% 封顶之后**必须改报暴伤**——否则玩家喂过 387 级以后
+    /// 行里那个数字一动不动，只会以为「喂满了就废了」（设计意图恰恰相反：继续喂）。
+    /// 数值一律走 Game.CritRateOf / CritDmgOf，面板自己再算一遍就会出现"62% 暴击率"。
+    /// </summary>
+    static string CritText(int lv, int to, bool preview)
+    {
+        double r0 = Game.CritRateOf(lv), d0 = Game.CritDmgOf(lv);
+        double r1 = Game.CritRateOf(to), d1 = Game.CritDmgOf(to);
+
+        static string At(double r, double d) => $"暴击 {Fmt.Pct(r, 2)}"
+            + (d > 0.5 + 1e-9 ? $" · 暴伤 +{Fmt.Pct(d, 1)}" : "");
+
+        string now = At(r0, d0);
+        if (!preview) return "　　" + now;
+        // 暴击率已经到顶、这一档涨的是暴伤 → 只报暴伤，免得显示「60.00% → 60.00%」
+        string nxt = r1 - r0 > 1e-9 ? At(r1, d1) : $"暴伤 +{Fmt.Pct(d1, 1)}";
+        return $"　　{now} → {nxt}";
     }
 
     void BuildShop()
@@ -1464,8 +1498,11 @@ public class PanelWindow : Window
             () => { Game.I.S.ListenKeys = !Game.I.S.ListenKeys; RebuildSub(); },
             note: "统计键盘敲击次数，每 300 次掉一个金币袋。只记次数，不记录按了什么键"));
 
-        Add(RowMake($"自动回退 [{(s.S.AutoRetreat ? "开" : "关")}]", null,
+        // 定层驻守时自动回退必须置灰：冻结优先，否则「我就待在这一层」根本待不住。
+        Add(RowMake($"自动回退 [{(s.S.AutoRetreat ? "开" : "关")}]",
+            s.S.LockLayer ? "驻守中·已冻结" : null,
             () => { Game.I.S.AutoRetreat = !Game.I.S.AutoRetreat; RebuildSub(); },
+            enabled: !s.S.LockLayer,
             note: "打不过当前层时自动退回上一层。关掉就一直卡在这只怪身上反复送"));
 
         Add(RowMake($"战斗速度（{s.S.BattleSeconds}s）", "点击切换", () =>

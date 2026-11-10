@@ -287,6 +287,112 @@ public static class SelfTest
             Check("本命器次数档刷新", false, "自测异常：" + ex.GetBaseException().Message);
         }
 
+        // 13.5) 暴击：面板文案与实战必须同一份数值（60% 封顶、溢出转暴伤）
+        try
+        {
+            var t = typeof(KeySpirit.UI.PanelWindow);
+            var eff = t.GetMethod("EffectText",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+            Check("墨眸 387 级起暴击率封顶 60%",
+                Math.Abs(Game.CritRateOf(387) - 0.60) < 1e-9,
+                Fmt.Pct(Game.CritRateOf(387), 2));
+            Check("墨眸 500 级仍 60%、溢出转成暴伤",
+                Math.Abs(Game.CritRateOf(500) - 0.60) < 1e-9 && Game.CritDmgOf(500) > 0.55,
+                $"{Fmt.Pct(Game.CritRateOf(500), 2)} · 暴伤 +{Fmt.Pct(Game.CritDmgOf(500), 1)}");
+
+            string t500 = (string)eff.Invoke(null, new object[] { 2, 500, 100 })!;
+            Check("封顶后墨眸预览改报暴伤、不再出现 60% 以上的暴击率",
+                t500.Contains("暴伤") && !t500.Contains("75.00%"), t500);
+
+            string t300 = (string)eff.Invoke(null, new object[] { 2, 300, 10 })!;
+            Check("未封顶时墨眸预览照旧报暴击率",
+                t300.Contains("暴击") && !t300.Contains("暴伤"), t300);
+        }
+        catch (Exception ex)
+        {
+            Check("暴击面板文案", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
+        // 13.6) 强化预览必须显示**最终属性**，不能只算强化那一项
+        //      （旧版 EffectText 写的是 Pow(1.06,lv)*10，漏了本体/等级乘区/墨根乘区，
+        //       同一屏幕上强化页说 3.0B、角色页说 35.0B）
+        try
+        {
+            var effT = typeof(KeySpirit.UI.PanelWindow);
+            var eff = effT.GetMethod("EffectText",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+            var bladeOnly = Big.Pow(1.06, g.S.EnhBlade) * 10;
+            Check("强化预览含等级与墨根乘区，不再只是 1.06^n×10",
+                g.AtkIfBlade(g.S.EnhBlade).CompareTo(bladeOnly) > 0
+                && g.AtkIfBlade(g.S.EnhBlade).CompareTo(g.PlayerAtk) == 0,
+                $"预览 {Fmt.Small(g.AtkIfBlade(g.S.EnhBlade))} · 只算强化 {Fmt.Small(bladeOnly)} · 角色页 {Fmt.Small(g.PlayerAtk)}");
+
+            // 墨根乘区（转生后 Root > 0）必须进到预览里
+            var noRoot = Big.Clamp((Big.Of(10) + g.BaseAtk) * Big.Of(1 + 0.015 * (g.Level - 1)));
+            Check("AtkIfBlade 把墨根乘区算进去了",
+                g.S.Root > 0 && Math.Abs(g.AtkIfBlade(0).Log10 - (noRoot * Big.Pow(1.06, g.S.Root)).Log10) < 1e-9,
+                $"墨根 {g.S.Root} · 含根 {Fmt.Small(g.AtkIfBlade(0))} vs 不含根 {Fmt.Small(noRoot)}");
+
+            string a0 = (string)eff.Invoke(null, new object[] { 0, g.S.EnhBlade, 0 })!;
+            Check("预览行文字与角色页攻击一致", a0.Contains(Fmt.Small(g.PlayerAtk)), a0.Trim());
+        }
+        catch (Exception ex)
+        {
+            Check("强化属性预览口径", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
+        // 13.7) 层数推进：关了「自动下潜」或锁了本层，打赢守层者也不能被推走
+        try
+        {
+            const System.Reflection.BindingFlags FI = System.Reflection.BindingFlags.NonPublic
+                                                    | System.Reflection.BindingFlags.Instance;
+            const System.Reflection.BindingFlags PI = System.Reflection.BindingFlags.Public
+                                                    | System.Reflection.BindingFlags.Instance;
+            var kill = typeof(Game).GetMethod("KillMob", FI)!;
+            var setIdx = typeof(Game).GetProperty("MobIndex", PI)!.GetSetMethod(true)!;
+            var setLoss = typeof(Game).GetProperty("ConsecutiveLoss", PI)!.GetSetMethod(true)!;
+
+            void KillKeeper(int layer, int maxLayer, bool descend, bool lockLayer)
+            {
+                g.S.Layer = layer; g.S.MaxLayer = maxLayer;
+                g.S.AutoDescend = descend; g.S.LockLayer = lockLayer;
+                setIdx.Invoke(g, new object[] { 10 });
+                kill.Invoke(g, null);
+            }
+
+            KillKeeper(50, 50, false, true);
+            Check("锁定本层：打赢守层者停在原层", g.Layer == 50, $"layer {g.Layer}");
+
+            KillKeeper(60, 50, false, true);
+            Check("驻守时仍把本层记进「本轮最高」（否则界面永远差一层）",
+                g.S.MaxLayer == 60, $"MaxLayer {g.S.MaxLayer}");
+
+            KillKeeper(50, 50, false, false);
+            Check("关掉自动下潜同样停在原层", g.Layer == 50, $"layer {g.Layer}");
+
+            KillKeeper(50, 50, true, false);
+            Check("自动下潜开着才推进一层", g.Layer == 51, $"layer {g.Layer}");
+
+            setLoss.Invoke(g, new object[] { 2 });
+            kill.Invoke(g, null);
+            Check("打赢一只就清掉连败计数（自动回退判的是「连败」）",
+                g.ConsecutiveLoss == 0, $"连败 {g.ConsecutiveLoss}");
+
+            var bagField = typeof(Game).GetField("bagCounter", FI)!;
+            bagField.SetValue(g, 299L);
+            g.S.MaxLayer = 200; g.S.Layer = 1;
+            g.Rebirth();
+            Check("转生清掉敲击掉袋进度（袋值按当前层算，不该带着旧层的）",
+                (long)bagField.GetValue(g)! == 0, $"残留 {bagField.GetValue(g)}");
+            g.S.AutoDescend = true; g.S.LockLayer = false;
+        }
+        catch (Exception ex)
+        {
+            Check("层数推进开关", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
         // 14) 商店：档位 1/10/100/1K/1M/1B/max，买墨晶与开墨匣都按档执行
         try
         {
