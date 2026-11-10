@@ -1007,6 +1007,49 @@ public static class SelfTest
                 + (nl4 > 0 ? tr4[..nl4] : tr4).Trim());
         }
 
+        // 21) 存档迁移：等级按当前曲线反算（v0.14.0）
+        try
+        {
+            // 21.1 曲线本身：层数越高等级越高，且与设计口径对得上
+            double c100 = Game.LvCapAt(100), c386 = Game.LvCapAt(386), c9999 = Game.LvCapAt(9999);
+            Check("应得等级随层数递增，与设计口径一致（386 层 ≈ 940 级）",
+                c100 < c386 && c386 < c9999
+                && Math.Abs(c386 - 940) < 3 && Math.Abs(c9999 - 17433) < 40,
+                $"100 层 {c100:0} · 386 层 {c386:0} · 9999 层 {c9999:0}");
+
+            var mig = typeof(Game).GetMethod("MigrateSave",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+            // 21.2 旧档虚高等级被收回曲线，且经验不会立刻顶回上一级
+            g.S.Schema = 0;
+            g.S.MaxLayer = 386; g.S.Layer = 386;
+            g.S.Level = 1247;
+            g.S.ExpM = 1e9; g.S.ExpE = 0;
+            mig.Invoke(g, null);
+            Check("旧档 1247 级按 386 层收回曲线、经验不会立刻顶回去",
+                g.S.Level == (int)Math.Floor(c386)
+                && g.Exp.CompareTo(g.ExpNeed) < 0
+                && g.S.Schema == Game.SaveSchema,
+                $"Lv{g.S.Level} · 经验 {Fmt.Large(g.Exp)} / {Fmt.Large(g.ExpNeed)}");
+
+            // 21.3 只迁一次：打过标记的档不再动等级（挂机刷层本来就该多拿等级）
+            g.S.Level = 9999;
+            mig.Invoke(g, null);
+            Check("迁移只做一次（打过 Schema 标记后不再压等级）",
+                g.S.Level == 9999, $"Lv{g.S.Level}");
+
+            // 21.4 只收不放：低于曲线的档保持原样
+            g.S.Schema = 0;
+            g.S.Level = 10;
+            g.S.MaxLayer = 386; g.S.Layer = 386; g.S.ExpM = 0;
+            mig.Invoke(g, null);
+            Check("低于曲线的档保持原样，不会被垫高", g.S.Level == 10, $"Lv{g.S.Level}");
+        }
+        catch (Exception ex)
+        {
+            Check("存档迁移", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
         sb.AppendLine();
         sb.AppendLine($"RESULT pass={pass} fail={fail}");
         var outFile = Path.Combine(Path.GetTempPath(), "keyspirit_selftest.txt");

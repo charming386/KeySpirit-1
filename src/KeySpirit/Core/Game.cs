@@ -42,6 +42,11 @@ public class SaveDto
     public int EnhBatch { get; set; } = 1;      // 单次强化次数：1/10/50/100，-1 = max
     public int ShopBatch { get; set; } = 1;     // 商店单次数量：1/10/100/1K/1M/1B，-1 = max
     public DateTime LastSaveUtc { get; set; } = DateTime.UtcNow;
+    /// <summary>
+    /// 存档结构版本。老档没有这个字段，反序列化出来是 0 —— 迁移逻辑正是靠这一点
+    /// 判断「这是没迁过的档」。每次改动旧档语义都要 +1，并在 MigrateSave 里补一段。
+    /// </summary>
+    public int Schema { get; set; }
 }
 
 /// <summary>游戏状态与全部规则实现（对应策划稿 3~7 章）。</summary>
@@ -243,6 +248,34 @@ public class Game
 
     /// <summary>守层者的经验倍率：**一只守层者 ≈ 一级**（下限 3 保住前期）。</summary>
     public double KeeperExpMul => Math.Max(3.0, ExpKills);
+
+    /// <summary>每层的小怪只数（第 10 只是守层者，第 5 只是精英）。</summary>
+    public const int MiniPerLayer = 8;
+
+    /// <summary>
+    /// 从第 1 层一路打到第 <paramref name="maxLayer"/> 层、**按当前曲线应得的等级**（下限 1）。
+    ///
+    /// 一层给的经验当量 = 8 只小怪 + 1 只精英 + 1 只守层者
+    /// = `MiniPerLayer + 精英倍率 + 守层倍率`；
+    /// 一级要 `k = 2 + 0.58√层` 只当量，所以这一层能升 `当量 / k` 级。
+    /// 逐层累加即可，不必逐只怪模拟。
+    ///
+    /// 唯一用途是**存档迁移**：把旧曲线（或测试档）攒下的虚高等级拉回这条线上。
+    /// 它不是常驻上限——挂机反复刷层本来就该多拿等级，所以只在迁移时算一次。
+    /// </summary>
+    public static double LvCapAt(int maxLayer)
+    {
+        int n = Math.Clamp(maxLayer, 0, Limits.MaxLayer);
+        double lv = 1.0;
+        for (int L = 1; L <= n; L++)
+        {
+            double k = ExpKillsBase + ExpKillsSlope * Math.Sqrt(L);
+            double elite = Math.Max(1.5, k * 0.5);
+            double keeper = Math.Max(3.0, k);
+            lv += (MiniPerLayer + elite + keeper) / k;
+        }
+        return lv;
+    }
 
 
     public double LayerProgress => MobIndex / 10.0;
@@ -970,6 +1003,46 @@ public class Game
         S.Bags ??= new List<double[]>();
         if (S.BattleSeconds < 1) S.BattleSeconds = 2;
         EnsureDaily();   // 关了一整夜再开：今日敲击从 0 起算
+        MigrateSave();
+    }
+
+    /// <summary>当前存档结构版本。见 <see cref="SaveDto.Schema"/>。</summary>
+    public const int SaveSchema = 1;
+
+    /// <summary>
+    /// 存档迁移：把旧档的语义拉到当前版本，跑完打上 <see cref="SaveSchema"/>。
+    ///
+    /// v1（v0.14.0）：**等级按当前曲线反算**。
+    /// 旧档的升级需求是另一套公式（早期版本一只怪就能连升好几级），攒下来的等级
+    /// 拿到新曲线面前是白送的乘区——同一个层数别人 940 级、旧档 1247 级，
+    /// 凭空多一倍多的攻击。这里按 `LvCapAt(到达过的最高层)` 收掉超出的部分。
+    ///
+    /// 只收不放：等级低于曲线的档保持原样（那是自己的进度，不该被垫高）。
+    /// 收完把当前经验压到本级 90% 以内，否则下一次 AddExp 立刻又顶回去。
+    /// </summary>
+    void MigrateSave()
+    {
+        if (S.Schema >= SaveSchema) return;
+
+        int reached = Math.Max(1, Math.Max(S.Layer, S.MaxLayer));
+        int cap = (int)Math.Floor(LvCapAt(reached));
+        if (cap < 1) cap = 1;
+
+        if (S.Level > cap)
+        {
+            int old = S.Level;
+            S.Level = cap;
+            var e = Exp;
+            var lim = ExpNeed * 0.9;
+            if (e.CompareTo(lim) > 0)
+            {
+                e = lim;
+                S.ExpM = e.M; S.ExpE = e.E;
+            }
+            Log.Write($"存档迁移：等级 {old} → {cap}（按第 {reached} 层反算，旧曲线多出的部分已收走）");
+        }
+
+        S.Schema = SaveSchema;
     }
 
     void ApplyOffline()
