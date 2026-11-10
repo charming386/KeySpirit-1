@@ -1044,6 +1044,12 @@ public static class SelfTest
             g.S.MaxLayer = 386; g.S.Layer = 386; g.S.ExpM = 0;
             mig.Invoke(g, null);
             Check("低于曲线的档保持原样，不会被垫高", g.S.Level == 10, $"Lv{g.S.Level}");
+
+            // 21.5 新档 / 初始化重置后必须带上当前 Schema，否则第 1 层刷到高等级一重启就被压回 5 级
+            g.ResetAll();
+            Check("初始化重置后的存档已带 Schema 标记",
+                g.S.Schema == Game.SaveSchema && g.S.Level == 1,
+                $"Schema {g.S.Schema} · Lv{g.S.Level}");
         }
         catch (Exception ex)
         {

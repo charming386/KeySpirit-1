@@ -951,6 +951,11 @@ public class Game
     {
         S = new SaveDto();
 
+        // 新档必须带上当前结构版本。`new SaveDto()` 的 Schema 是 0（那也是老档的特征），
+        // 若不在这里标上，重置后在新手层（第 1 层）刷出高等级，一重启就会被当成旧档
+        // 按 `LvCapAt(1) = 5` 压回 5 级。
+        S.Schema = SaveSchema;
+
         // 运行期状态不在 SaveDto 里，得单独归零，否则界面上还挂着旧的血量/怪物/力竭
         HpMax = CalcHp();
         Hp = HpMax;
