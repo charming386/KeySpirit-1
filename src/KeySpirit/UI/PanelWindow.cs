@@ -1046,14 +1046,15 @@ public class PanelWindow : Window
 
         SectionRow("这一只");
         DetailRow("层数", () => $"第 {Game.I.Layer} 层 · 第 {Game.I.MobNo}/10 只");
-        DetailRow("生命", () => $"{Fmt.Large(Game.I.MobHp)} / {Fmt.Large(Game.I.MobHpMax)}");
-        DetailRow("攻击", () => Fmt.Small(Game.I.MobAtkNow));
-        DetailRow("防御", () => Fmt.Small(Game.I.MobDefNow));
+        // 详情页口径：3 位小数，看得出强化一级的涨幅（主列血条旁仍是 1 位，见 Fmt.Large 注释）
+        DetailRow("生命", () => $"{Fmt.Large(Game.I.MobHp, Fmt.DetailDigits)} / {Fmt.Large(Game.I.MobHpMax, Fmt.DetailDigits)}");
+        DetailRow("攻击", () => Fmt.Small(Game.I.MobAtkNow, Fmt.DetailDigits));
+        DetailRow("防御", () => Fmt.Small(Game.I.MobDefNow, Fmt.DetailDigits));
 
         // 给出我方攻防，方便对照"还差多少打不动它"
         SectionRow("我方");
-        DetailRow("攻击", () => Fmt.Small(Game.I.PlayerAtk));
-        DetailRow("防御", () => Fmt.Small(Game.I.PlayerDef));
+        DetailRow("攻击", () => Fmt.Small(Game.I.PlayerAtk, Fmt.DetailDigits));
+        DetailRow("防御", () => Fmt.Small(Game.I.PlayerDef, Fmt.DetailDigits));
 
         var r = new Row
         {
@@ -1067,8 +1068,9 @@ public class PanelWindow : Window
                 // 换档位时换图；同一张不重复赋 Source（避免每秒重建位图）
                 var src = IconCache.Get(MobIconName(g.MobType));
                 if (!ReferenceEquals(mi.Source, src)) mi.Source = src;
-                double pct = g.MobHpMax.IsZero ? 0
-                    : Math.Clamp(g.MobHp.ToDouble() / g.MobHpMax.ToDouble(), 0, 1);
+                // 用 Big.Ratio 而不是 ToDouble 相除：血量过 1e+308 后两者都会饱和成
+                // double.MaxValue，除出来恒等于 1，血条会一直显示满格。
+                double pct = Big.Ratio(g.MobHp, g.MobHpMax);
                 // 首拍还没排版（ActualWidth=0）时退化成整宽估算，下一拍自然修正
                 double full = bar.ActualWidth;
                 if (full < 1) full = W_DETAIL - INNER - PAD_L - PAD_R;
@@ -1091,7 +1093,10 @@ public class PanelWindow : Window
         var s = Game.I;
         s.EnsureDaily();
 
-        SectionRow("每日礼包");
+        // 每日礼包**一天就两个**：5,000 档 1 次、20,000 档 1 次，领过就没了。
+        // 它不是「每 5,000 敲领一次」的重复奖励 —— 标题把「2 档 · 各 1 次」写在明面上，
+        // 免得看到 5,000 / 20,000 两行以为是按 5,000 一档往上加。
+        SectionRow("每日礼包（2 档 · 各 1 次）");
         var prog = RowMake("今日敲击", DailyProgText(), null, enabled: false);
         prog.Tick = () => { if (prog.Hint != null) prog.Hint.Text = DailyProgText(); };
         rows.Add(prog);
@@ -1105,7 +1110,9 @@ public class PanelWindow : Window
             var r = RowMake($"{Game.DailyTiers[i]:N0} 档", DailyRewardText(i),
                             () => { Game.I.ClaimDaily(tier); RebuildSub(); },
                             icon: "icon-reward",
-                            note: "每日礼包要手动点这一行才入账，不会被金币袋批量带走；本地跨零点恢复两档。");
+                            note: i == 0
+                                ? "5,000 敲档：只给金币，按当前层单只金币 × 60 再乘等级折算。要手动点这一行才入账。每天只有这一次，领过就灰掉，敲得再多也不会再出现。"
+                                : "20,000 敲档：只给墨晶（强化材料），随本轮最高层缓长并封顶。要手动点这一行才入账。每天只有这一次，领过就灰掉，敲得再多也不会再出现。");
             r.Tick = () =>
             {
                 bool claimed = Game.I.DailyClaimed(tier);
@@ -1124,49 +1131,76 @@ public class PanelWindow : Window
         }
 
         SectionRow("金币袋");
+        // 每日名额：40 袋 = 20,000 敲。到顶后必须说清「今天没了」，
+        // 否则玩家敲了半天不掉袋，会以为是坏掉了。
+        // 袋数**由今日敲击数派生**（BagsToday），不再读那个另存的计数器：
+        // 计数器会跟敲击数分家（老存档 DailyBags=0），于是出现「今日敲击 4,800」配「今日 0/40 袋」。
+        int bagsToday = s.BagsToday;
+        bool bagFull = bagsToday >= Game.BagKeysPerDay;
+        string bagCap = $"今日 {bagsToday}/{Game.BagKeysPerDay} 袋";
         if (s.S.Bags.Count == 0)
         {
-            subRoot.Children.Add(Grey($"暂无可领金币袋·每 {Game.BagKeys} 次敲击掉一袋"));
+            subRoot.Children.Add(Grey(bagFull
+                ? $"今日金币袋已满 {Game.BagKeysPerDay} 袋·明日零点恢复"
+                : $"暂无可领金币袋·每 {Game.BagKeys} 敲一袋（{bagCap}）"));
         }
         else
         {
             // 金币袋没有「单袋领」这回事，点这一行就是把所有待领袋一次入账。
             // 原来下方还有一条「一键全领」，它会把每日礼包两档也顺手带走；
             // 按需求礼包必须玩家自己点档位行，所以那条批量入口整体撤掉了。
-            Add(RowMake($"金币袋 ×{s.S.Bags.Count}", $"+{Fmt.Large(s.BagSum)}",
-                () => { s.ClaimBags(); RebuildSub(); }));
+            var bagRow = RowMake($"金币袋 ×{s.S.Bags.Count}", $"+{Fmt.Large(s.BagSum)}",
+                () => { s.ClaimBags(); RebuildSub(); },
+                note: $"{bagCap}（每日上限 {Game.BagKeysPerDay} 袋 = {Game.DailyKeyCap:N0} 敲）；"
+                    + "点这一行把待领袋一次入账。");
+            bagRow.Tick = () => { if (bagRow.Hint != null) bagRow.Hint.Text = $"+{Fmt.Large(s.BagSum)}"; };
+            Add(bagRow);
         }
     }
 
-    /// <summary>今日敲击行的右侧进度：显示「到下一个还没领的档」的进度，全领完显示已领。</summary>
     /// <summary>
-    /// 「今日敲击」右侧那行。三种状态，顺序不能反：
-    ///   · 有已达标的档还没领 → 「21,360 · 可领 2 档」
-    ///   · 没有可领的、但有档还没到 → 「6,000 / 20,000」（下一档门槛）
-    ///   · 全部领完 → 「21,360 · 已全领」
-    /// 旧写法只判「未领且未达标」，两档都达标却都没领时会漏到最后一档，显示成「已全领」——
-    /// 明明下面两行都可以点。
+    /// 「今日敲击」右侧那行。分母固定是**今日上限 20,000**（= 40 袋 × 500 敲），
+    /// 不再跟着「下一档还没到的门槛」跳 —— 旧写法在 4,800 敲时显示「4,800 / 5,000」，
+    /// 看着像「今天最多只能敲 5,000」，而下面 20,000 档那一行又明摆着还有 15,200 敲。
+    ///
+    /// 到顶（20,000）之后**分母直接去掉**，只留还在涨的当前敲击数：这时候已经不掉袋了，
+    /// 敲击数本身照记（累计敲击也照记）。三种状态：
+    ///   · 未到顶 + 有可领档 → 「6,000 / 20,000 · 可领 1 档」
+    ///   · 未到顶 + 无        → 「4,800 / 20,000」
+    ///   · 到顶               → 「21,360 · 可领 2 档」／「21,360」（不带分母，且不再提示「已全领」）
+    /// 到顶后仍保留「· 可领 N 档」，那是可点提示、不是进度分母；档位行本身也会亮 Accent 色。
     /// </summary>
     static string DailyProgText()
     {
         var g = Game.I;
-        g.EnsureDaily();
-
-        int ready = 0, next = -1;
+        int ready = 0;
         for (int i = 0; i < Game.DailyTiers.Length; i++)
-        {
-            if (g.DailyClaimed(i)) continue;
-            if (g.S.DailyKeys >= Game.DailyTiers[i]) ready++;
-            else if (next < 0) next = i;
-        }
+            if (!g.DailyClaimed(i) && g.S.DailyKeys >= Game.DailyTiers[i]) ready++;
 
-        if (ready > 0) return $"{g.S.DailyKeys:N0} · 可领 {ready} 档";
-        if (next >= 0) return $"{g.S.DailyKeys:N0} / {Game.DailyTiers[next]:N0}";
-        return $"{g.S.DailyKeys:N0} · 已全领";
+        string head = DailyKeysText();
+        return ready > 0 ? $"{head} · 可领 {ready} 档" : head;
     }
 
+    /// <summary>
+    /// 「今日敲击」的计数本身：未到顶带 `/ 20,000` 分母，到顶后只留数字（分母删掉，但数照涨）。
+    /// 领取页与统计页共用，免得两处口径又分家。
+    /// </summary>
+    static string DailyKeysText()
+    {
+        var g = Game.I;
+        g.EnsureDaily();
+        return g.BagsTodayFull ? $"{g.S.DailyKeys:N0}" : $"{g.S.DailyKeys:N0} / {Game.DailyKeyCap:N0}";
+    }
+
+    /// <summary>
+    /// 档位右侧的奖励量。**两档给的东西不一样**（v0.15.0）：
+    /// 5,000 档只有金币（吃等级乘区，越练越厚），20,000 档只有墨晶（吃最高层，封顶）。
+    /// 所以这里不能再用「金币 · 墨晶」一个模板套两档，否则会显示「+0 · 墨晶 0」。
+    /// </summary>
     static string DailyRewardText(int tier)
-        => $"+{Fmt.Large(Game.I.DailyGold(tier))} · 墨晶 {Game.I.DailyInk(tier)}";
+        => tier == 0
+           ? $"+{Fmt.Large(Game.I.DailyGold(0))} 金币"
+           : $"墨晶 {Game.I.DailyInk(1)}";
 
     void BuildLayerMenu()
     {
@@ -1248,7 +1282,7 @@ public class PanelWindow : Window
     {
         "每级 ×1.06 攻击（叠乘）。攻击决定每回合能打掉多少血",
         "每级 ×1.06 生命。生命归零会力竭休整，休整期间不战斗",
-        "每级 +0.15% 暴击率（60% 封顶），并且每级 ×1.06 暴伤",
+        "每级 +0.15% 暴击率（墨眸自身封顶 30%，200 级满，余下 30 个点留给后续系统）· 每级 +0.1% 暴伤（无上限，一直能练）。四件里最贵",
         "每级 ×1.06 防御。层数越高怪物攻击越狠，主要靠它扛",
     };
 
@@ -1313,7 +1347,7 @@ public class PanelWindow : Window
     static int AffordableCount(int idx)
     {
         var s = Game.I;
-        int room = Limits.MaxEnhance - s.EnhLevel(idx);
+        int room = Game.EnhCapOf(idx) - s.EnhLevel(idx);
         if (room <= 0) return 0;
 
         int cap = s.MaxEnhanceable(idx);                                   // 墨晶最多够几级
@@ -1329,7 +1363,7 @@ public class PanelWindow : Window
     {
         var s = Game.I;
         if (gain > 0) return $"{Fmt.Large(s.EnhCostTotal(idx, gain))} 墨晶";
-        if (s.EnhLevel(idx) >= Limits.MaxEnhance) return "已满级";
+        if (s.EnhLevel(idx) >= Game.EnhCapOf(idx)) return "已满级";
 
         int cap = s.MaxEnhanceable(idx);
         return cap > 0 ? $"墨晶不足 · 够×{cap}" : "墨晶不足";
@@ -1345,26 +1379,32 @@ public class PanelWindow : Window
         var g = Game.I;
         int to = lv + Math.Max(0, gain);
         bool preview = gain > 0;
+        // 属性预览固定 3 位小数：这一行就是「连点升级看涨幅」的地方，1 位小数时
+        // 生命每级 +6% 根本看不出来（本页空间够，306 宽放得下 X → Y 两条 3 位）。
+        int D = Fmt.DetailDigits;
         return idx switch
         {
             // 一律走 Game.AtkIfBlade / HpIfRobe / DefIfSeal，拿到的是**最终属性**
-            // （本体 + 强化 + 等级乘区 + 墨根乘区），跟角色页同一份口径。
+            // （本体 + 强化 + 墨根乘区；v0.18.0 起只有攻击吃等级乘区），跟角色页同一份口径。
             0 => preview
-                ? $"　　攻击 {Fmt.Small(g.AtkIfBlade(lv))} → {Fmt.Small(g.AtkIfBlade(to))}"
-                : $"　　攻击 {Fmt.Small(g.AtkIfBlade(lv))}",
+                ? $"　　攻击 {Fmt.Small(g.AtkIfBlade(lv), D)} → {Fmt.Small(g.AtkIfBlade(to), D)}"
+                : $"　　攻击 {Fmt.Small(g.AtkIfBlade(lv), D)}",
             1 => preview
-                ? $"　　生命 {Fmt.Small(g.HpIfRobe(lv))} → {Fmt.Small(g.HpIfRobe(to))}"
-                : $"　　生命 {Fmt.Small(g.HpIfRobe(lv))}",
+                ? $"　　生命 {Fmt.Small(g.HpIfRobe(lv), D)} → {Fmt.Small(g.HpIfRobe(to), D)}"
+                : $"　　生命 {Fmt.Small(g.HpIfRobe(lv), D)}",
             2 => CritText(lv, to, preview),
             _ => preview
-                ? $"　　防御 {Fmt.Small(g.DefIfSeal(lv))} → {Fmt.Small(g.DefIfSeal(to))}"
-                : $"　　防御 {Fmt.Small(g.DefIfSeal(lv))}",
+                ? $"　　防御 {Fmt.Small(g.DefIfSeal(lv), D)} → {Fmt.Small(g.DefIfSeal(to), D)}"
+                : $"　　防御 {Fmt.Small(g.DefIfSeal(lv), D)}",
         };
     }
 
     /// <summary>
-    /// 墨眸的预览文案。暴击率 60% 封顶之后**必须改报暴伤**——否则玩家喂过 387 级以后
-    /// 行里那个数字一动不动，只会以为「喂满了就废了」（设计意图恰恰相反：继续喂）。
+    /// 墨眸的预览文案。v0.16.1 起**只有暴击率会到顶**（墨眸自身 30%、200 级满），
+    /// 暴伤取消封顶、每级 +0.1% 一直涨。所以到顶后预览只报暴伤，
+    /// 不再显示「32.00% → 32.00%」这种没信息量的箭头。
+    /// 暴伤每级只涨 0.001，两位小数会把 ×1.994 → ×2.094 显示成两条一模一样的 ×2.0，
+    /// 因此这里固定**三位小数**。
     /// 数值一律走 Game.CritRateOf / CritDmgOf，面板自己再算一遍就会出现"62% 暴击率"。
     /// </summary>
     static string CritText(int lv, int to, bool preview)
@@ -1372,15 +1412,21 @@ public class PanelWindow : Window
         double r0 = Game.CritRateOf(lv), d0 = Game.CritDmgOf(lv);
         double r1 = Game.CritRateOf(to), d1 = Game.CritDmgOf(to);
 
-        // 暴伤从 v0.13.0 起是指数成长（每级 ×1.06），几百级后就是亿级倍率，
-        // 不能再用 Fmt.Pct 打成 "280000000000%"——一律走大数格式化，显示成「×2.8B」。
-        static string At(double r, double d) => $"暴击 {Fmt.Pct(r, 2)}"
-            + $" · 暴伤 ×{Fmt.Small(Big.Of(1 + d))}";
+        static string Dmg(double d) => "×" + (1 + d).ToString("0.000");
+        static string Rate(double r, bool rateFull) => Fmt.Pct(r, 2) + (rateFull ? "（暴击率满）" : "");
 
-        string now = At(r0, d0);
+        string now = $"暴击 {Rate(r0, lv >= Game.CritRateFullLv)} · 暴伤 {Dmg(d0)}";
         if (!preview) return "　　" + now;
-        // 暴击率已经到顶、这一档涨的是暴伤 → 只报暴伤，免得显示「60.00% → 60.00%」
-        string nxt = r1 - r0 > 1e-9 ? At(r1, d1) : $"暴伤 ×{Fmt.Small(Big.Of(1 + d1))}";
+
+        bool rateMoving = r1 - r0 > 1e-9;
+        bool dmgMoving = d1 - d0 > 1e-9;
+        if (!rateMoving && !dmgMoving) return "　　" + now;
+
+        // 只报这一档真正在涨的那一项：到顶的项不再重复一遍当前值。
+        // 省略重复的「暴击 / 暴伤」二字，否则这一行会长到撑出面板。
+        string nxt = (rateMoving ? Rate(r1, to >= Game.CritRateFullLv) : "")
+                   + (rateMoving && dmgMoving ? " · " : "")
+                   + (dmgMoving ? Dmg(d1) : "");
         return $"　　{now} → {nxt}";
     }
 
@@ -1431,12 +1477,17 @@ public class PanelWindow : Window
         Add(buy);
 
         var shortfall = s.InkShortfall(0);
+        // 行内只放「花多少金币」：颗数 + 总价一起塞会挤掉左侧标签（科学计数法改成 3 位小数后
+        // 多出两个字符，实测「补到够升墨刃」直接变成「补到够…」）。颗数与单价挪到悬停注释里。
         Add(RowMake("补到够升墨刃",
             shortfall.CompareTo(Big.Zero) > 0
-                ? $"差 {Fmt.Large(shortfall)} 颗 · {Fmt.Large(shortfall * Game.InkPrice)} 金币"
+                ? $"花 {Fmt.Large(shortfall * Game.InkPrice)} 金币"
                 : "已够",
             () => { Game.I.FillToNext(0); RebuildSub(); },
-            enabled: shortfall.CompareTo(Big.Zero) > 0, icon: ""));
+            enabled: shortfall.CompareTo(Big.Zero) > 0, icon: "",
+            note: shortfall.CompareTo(Big.Zero) > 0
+                ? $"还差 {Fmt.Large(shortfall)} 颗墨晶（单价 {Game.InkPrice} 金币），一次补齐到能再升一级墨刃。"
+                : "墨晶已经够升一级墨刃，不用补。"));
 
         var boxN = ShopCount(250);
         var boxCost = Big.Of(250.0) * boxN;
@@ -1498,7 +1549,8 @@ public class PanelWindow : Window
 
         Add(RowMake($"敲击监听 [{(s.S.ListenKeys ? "开" : "关")}]", null,
             () => { Game.I.S.ListenKeys = !Game.I.S.ListenKeys; RebuildSub(); },
-            note: "统计键盘敲击次数，每 300 次掉一个金币袋。只记次数，不记录按了什么键"));
+            note: $"统计键盘敲击次数，每 {Game.BagKeys} 次掉一个金币袋，每日最多 {Game.BagKeysPerDay} 袋。"
+                + "只记次数，不记录按了什么键"));
 
         // 定层驻守时自动回退必须置灰：冻结优先，否则「我就待在这一层」根本待不住。
         Add(RowMake($"自动回退 [{(s.S.AutoRetreat ? "开" : "关")}]",
@@ -1621,15 +1673,21 @@ public class PanelWindow : Window
         if (!statsOnly)
         {
             SectionRow("角色");
-            DetailRow("等级", () => $"Lv {Game.I.Level} · 经验 {Fmt.Large(Game.I.Exp)} / {Fmt.Large(Game.I.ExpNeed)}");
+            // 本页（角色详情）统一 3 位小数：这里是「看涨幅」的地方，主列血条旁仍是 1 位。
+            int D = Fmt.DetailDigits;
+            DetailRow("等级", () => $"Lv {Game.I.Level} · 经验 {Fmt.Large(Game.I.Exp, D)} / {Fmt.Large(Game.I.ExpNeed, D)}");
             // 每级加点与「还差多少只怪」——升级不再是只涨一个乘区，面板上要看得见
             DetailRow("每级", () => $"+{Game.LvAtkGain:0.#} 攻 · +{Game.LvHpGain:0.#} 血 · +{Game.LvDefGain:0.#} 防");
             DetailRow("距下一级", () => $"约 {Game.I.ExpKills:0.#} 只同层小怪");
-            DetailRow("生命", () => $"{Fmt.Large(Game.I.Hp)} / {Fmt.Large(Game.I.HpMax)}（本体 {Fmt.Small(Game.I.BaseHp)}）");
-            DetailRow("攻击", () => $"{Fmt.Small(Game.I.PlayerAtk)}（本体 {Fmt.Small(Game.I.BaseAtk)}）");
-            DetailRow("防御", () => $"{Fmt.Small(Game.I.PlayerDef)}（本体 {Fmt.Small(Game.I.BaseDef)}）");
-            DetailRow("暴击", () => $"{Fmt.Pct(Game.I.CritRate, 2)} · 暴伤 ×{Fmt.Small(Big.Of(1 + Game.I.CritDmg))}");
-            DetailRow("墨根", () => $"{Game.I.S.Root} / {Limits.MaxSoul}（×{Fmt.Large(Big.Pow(1.06, Game.I.S.Root))}）");
+            DetailRow("生命", () => $"{Fmt.Large(Game.I.Hp, D)} / {Fmt.Large(Game.I.HpMax, D)}（本体 {Fmt.Small(Game.I.BaseHp, D)}）");
+            DetailRow("攻击", () => $"{Fmt.Small(Game.I.PlayerAtk, D)}（本体 {Fmt.Small(Game.I.BaseAtk, D)}）");
+            DetailRow("防御", () => $"{Fmt.Small(Game.I.PlayerDef, D)}（本体 {Fmt.Small(Game.I.BaseDef, D)}）");
+            DetailRow("暴击", () => Game.I.S.EnhEye >= Game.CritRateFullLv
+                ? $"{Fmt.Pct(Game.I.CritRate, 2)}（暴击率已满） · 暴伤 ×{(1 + Game.I.CritDmg):0.000}"
+                : $"{Fmt.Pct(Game.I.CritRate, 2)} · 暴伤 ×{(1 + Game.I.CritDmg):0.000}");
+            // 上限放到 10 万之后，分母写出来只会让人盯着一个永远到不了的数字，
+            // 这里只报乘区。真正的「上限」交给 ×1.07 的成本曲线自己解释。
+            DetailRow("墨根", () => $"{Game.I.S.Root}（×{Fmt.Large(Big.Pow(1.06, Game.I.S.Root), D)}）");
             DetailRow("层数", () => $"第 {Game.I.Layer} 层 · 最高 {Game.I.MaxLayer} · 第 {Game.I.S.Cycle} 轮");
             // 状态带倒计时：这一行每秒随 LiveRefresh 重读，所以修整中的秒数会自己往下走。
             DetailRow("状态", () => Game.I.S.Paused ? "已暂停"
@@ -1662,7 +1720,7 @@ public class PanelWindow : Window
 
         SectionRow("统计");
         DetailRow("累计敲击", () => Game.I.S.TotalKeys.ToString("N0"));
-        DetailRow("今日敲击", () => $"{Game.I.S.DailyKeys:N0} / {Game.DailyTiers[^1]:N0}");
+        DetailRow("今日敲击", DailyKeysText);
         DetailRow("今日礼包", () =>
         {
             int done = 0;
@@ -1784,7 +1842,7 @@ public class PanelWindow : Window
         {
             box.MouseEnter += (_, _) => { row.Hovered = true; Paint(row); };
             box.MouseLeave += (_, _) => { row.Hovered = false; Paint(row); };
-            box.MouseLeftButtonUp += (_, _) => click();
+            box.MouseLeftButtonUp += (_, _) => InvokeRow(click, label);
         }
 
         // 注释气泡与"能不能点"解耦：置灰的行（墨晶不足 / 层数不够转生）反而更需要解释，
@@ -1797,6 +1855,38 @@ public class PanelWindow : Window
         }
 
         return row;
+    }
+
+    /// <summary>
+    /// 点一行真正要做的事：**排到这一条输入事件走完之后**再执行。
+    ///
+    /// 为什么不在 MouseLeftButtonUp 里直接干：行里的动作十有八九要重建子列
+    /// （买墨晶、开墨匣、领礼包、强化、切页…），也就是在事件还在沿控件树派发的时候，
+    /// 把**正在派发这条事件的 Border** 从树上摘掉、连同它的子元素一起销毁。
+    /// WPF 多数时候扛得住，但这条路本身是"用完就删"的运气：一旦输入路由或布局在
+    /// 事后回头读那个已失效的元素，界面会直接卡住 —— 而这正是「领取礼包时卡死」
+    /// 唯一可能发生在领取之后（日志已写、钱已到账）的那一步。
+    /// 排到 Input 优先级之后，事件已经走完全程，拆谁都不会再有人在用。
+    ///
+    /// 顺带：动作抛异常时不再冒到全局，日志里会写明是哪一行。
+    /// </summary>
+    static void InvokeRow(Action click, TextBlock label)
+    {
+        string name = label.Text ?? "";
+        Diag.Note("点击「" + name + "」");
+        Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
+        {
+            Diag.Note("执行「" + name + "」");
+            try
+            {
+                click();
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"点击「{name}」抛异常：{ex}");
+            }
+            Diag.Note("完成「" + name + "」");
+        }), DispatcherPriority.Input);
     }
 
     // ================= 注释气泡（8.4.1）=================
@@ -1874,6 +1964,59 @@ public class PanelWindow : Window
         foreach (var r in rows)
             if (r.Label?.Text?.Contains(keyword) == true) return r.Note;
         return null;
+    }
+
+    /// <summary>
+    /// 复现工具用：按可见文字找到一行，把它的鼠标抬起事件真的发一遍——与玩家点这一行
+    /// 走的是同一条路径（同一个 click 委托、同一个 RebuildSub），不是另写一套调用。
+    /// 不走 RaiseEvent 就只能自己复制一份 click 逻辑，那样测到的不是玩家遇到的。
+    /// </summary>
+    internal bool ShotClick(string keyword)
+    {
+        foreach (var r in rows)
+        {
+            if (r.Label?.Text?.Contains(keyword) != true) continue;
+            r.Box.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = UIElement.MouseLeftButtonUpEvent,
+            });
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>复现工具用：把光标「停在某一行上」，让注释气泡的计时真的跑起来。</summary>
+    internal bool ShotHover(string keyword)
+    {
+        foreach (var r in rows)
+        {
+            if (r.Label?.Text?.Contains(keyword) != true) continue;
+            r.Box.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0)
+            {
+                RoutedEvent = UIElement.MouseEnterEvent,
+            });
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 复现工具用：这一行在**屏幕上的物理像素矩形**。真实点击要把光标挪过去，
+    /// 所以得用 PointToScreen（返回的就是物理像素），不能再拿 DIP 去算。
+    /// </summary>
+    internal Rect RowRectOnScreen(string keyword)
+    {
+        foreach (var r in rows)
+        {
+            if (r.Label?.Text?.Contains(keyword) != true) continue;
+            try
+            {
+                var p = r.Box.PointToScreen(new Point(0, 0));
+                return new Rect(p.X, p.Y, Math.Max(2, r.Box.ActualWidth), Math.Max(2, r.Box.ActualHeight));
+            }
+            catch { }
+        }
+        return Rect.Empty;
     }
 
     void Add(Row r)
@@ -1962,7 +2105,7 @@ public class PanelWindow : Window
 
         if (hLv != null)
         {
-            double ep = s.ExpNeed.IsZero ? 0 : Math.Clamp(s.Exp.ToDouble() / s.ExpNeed.ToDouble(), 0, 1);
+            double ep = Big.Ratio(s.Exp, s.ExpNeed);
             hLv.Text = $"Lv {s.Level}   ·   经验 {Math.Min(99, (int)(ep * 100))}%";
             if (expFill != null)
                 expFill.Width = Math.Max(0, (W_MAIN - INNER - PAD_L - PAD_R) * ep);
@@ -1973,7 +2116,7 @@ public class PanelWindow : Window
 
         if (hpFill != null && hpHolder != null)
         {
-            double pct = s.HpMax.IsZero ? 0 : Math.Clamp(s.Hp.ToDouble() / s.HpMax.ToDouble(), 0, 1);
+            double pct = Big.Ratio(s.Hp, s.HpMax);
             // 首次刷新时可能还没排版（ActualWidth=0），退化成整宽估算，下一拍自然修正
             double full = hpHolder.ActualWidth;
             if (full < 1) full = W_MAIN - INNER - PAD_L - PAD_R - 62;

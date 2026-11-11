@@ -124,7 +124,7 @@ public static class Shot
         var g = Game.I;
         var s = g.S;
 
-        s.Level = 78;                     // 14 层在新曲线下大约就是这个等级（约 6 级/层）
+        s.Level = 36;                     // v0.19.0 新曲线：14 层 ≈ 36 级（LvCapAt(14)）
         s.Layer = 14;
         s.MaxLayer = 14;
         s.Cycle = 1;

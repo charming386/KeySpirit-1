@@ -32,19 +32,71 @@ public static class SelfTest
         Check("Fmt 999→999", Fmt.Large(Big.Of(999)) == "999", Fmt.Large(Big.Of(999)));
         Check("Fmt 1000→1.0K", Fmt.Large(Big.Of(1000)) == "1.0K", Fmt.Large(Big.Of(1000)));
         Check("Fmt 16000→16.0K", Fmt.Large(Big.Of(16000)) == "16.0K", Fmt.Large(Big.Of(16000)));
-        Check("Fmt 1e15→1.0e+15", Fmt.Large(new Big(1, 15)) == "1.0e+15", Fmt.Large(new Big(1, 15)));
-        Check("Fmt 1.8e303 不出 Infinity", !Fmt.Large(Limits.Max).Contains("Inf"), Fmt.Large(Limits.Max));
+        // v0.18.3：位数由调用处决定，**默认 1 位**（主列血条旁 / 托盘 / 日志），详情页才 3 位。
+        // 这一组的第一条就是防回归的：谁再把默认值改成 3，主列血条就会被数字挤短。
+        Check("主列口径默认 1 位（血条旁的数字不能变长）",
+            Fmt.Large(new Big(9.945, 15)) == "9.9e+15", Fmt.Large(new Big(9.945, 15)));
+        Check("Fmt 1e15 默认 →1.0e+15",
+            Fmt.Large(new Big(1, 15)) == "1.0e+15", Fmt.Large(new Big(1, 15)));
+        Check("详情页口径 1e15 →1.000e+15（3 位小数）",
+            Fmt.Large(new Big(1, 15), Fmt.DetailDigits) == "1.000e+15",
+            Fmt.Large(new Big(1, 15), Fmt.DetailDigits));
+        Check("详情页口径 9.9451e+15→9.945e+15（补足 3 位、向下取整）",
+            Fmt.Large(new Big(9.9451, 15), Fmt.DetailDigits) == "9.945e+15",
+            Fmt.Large(new Big(9.9451, 15), Fmt.DetailDigits));
+        Check("详情页口径在 1e+500 档同样 3 位",
+            Fmt.Large(new Big(1.23456, 500), Fmt.DetailDigits) == "1.234e+500",
+            Fmt.Large(new Big(1.23456, 500), Fmt.DetailDigits));
+        // 核心诉求：详情页里同一数量级的小差异要看得见。
+        // 9.94e+15 与 9.95e+15 只差 0.1%，1 位小数印出来都是「9.9e+15」；3 位能分开。
+        Check("详情页能分出同一指数内 0.1% 的差别（1 位时都是 9.9e+15）",
+            Fmt.Large(new Big(9.94, 15)) == Fmt.Large(new Big(9.95, 15))
+            && Fmt.Large(new Big(9.94, 15), Fmt.DetailDigits) != Fmt.Large(new Big(9.95, 15), Fmt.DetailDigits),
+            $"{Fmt.Large(new Big(9.94, 15))} / {Fmt.Large(new Big(9.95, 15), Fmt.DetailDigits)}");
+        Check("K/M/B 段两种口径都是 1 位小数（不是科学记数法）",
+            Fmt.Large(Big.Of(1234000)) == "1.2M"
+            && Fmt.Large(Big.Of(1234000), Fmt.DetailDigits) == "1.2M",
+            $"{Fmt.Large(Big.Of(1234000))} / {Fmt.Large(Big.Of(1234000), Fmt.DetailDigits)}");
+        Check("Small 也跟随位数：详情页 1.2346e+15→1.234e+15",
+            Fmt.Small(new Big(1.2346, 15), Fmt.DetailDigits) == "1.234e+15",
+            Fmt.Small(new Big(1.2346, 15), Fmt.DetailDigits));
+        Check("Fmt 1.8e3000 不出 Infinity", !Fmt.Large(Limits.Max).Contains("Inf"), Fmt.Large(Limits.Max));
 
-        // 2) 封顶（13.3）
-        var clamped = Big.Clamp(Big.Of(1e308));
-        Check("Clamp 1e308 → 1.8e+303", clamped.CompareTo(Limits.Max) == 0, Fmt.Large(clamped));
+        // 2) 封顶（13.3）：v0.17.0 上限由 1.8e+303 抬到 1.8e+3000
+        var clamped = Big.Pow(1.06, 130000);           // ≈1e+3337，越过新上限
+        Check("Clamp 越过 1.8e+3000 的数值", Big.Clamp(clamped).CompareTo(Limits.Max) == 0, Fmt.Large(Big.Clamp(clamped)));
+        Check("1e+308 不再被削成 1.8e+303（旧上限的隐形天花板已拆掉）",
+            Big.Clamp(Big.Of(1e308)).CompareTo(Big.Of(1e308)) == 0, Fmt.Large(Big.Clamp(Big.Of(1e308))));
         var overflow = Big.Pow(1.06, 20000);
         Check("Pow 1.06^20000 仍有限", !double.IsInfinity(overflow.ToDouble()), Fmt.Large(overflow));
+
+        // 2.5) 大数工具：ToDouble 饱和 / Ratio 比例 / 三个上限都放到了 10 万
+        Check("ToDouble 超范围时饱和到 double.MaxValue",
+            new Big(1.5, 900).ToDouble() == double.MaxValue, new Big(1.5, 900).ToDouble().ToString("E1"));
+        Check("Big.Ratio 两个 1e+500 也能算比例",
+            Math.Abs(Big.Ratio(Big.Pow(10, 500) * 5, Big.Pow(10, 500) * 10) - 0.5) < 1e-9
+            && Math.Abs(Big.Ratio(Big.Of(5), Big.Of(10)) - 0.5) < 1e-9
+            && Big.Ratio(Big.Zero, Big.Of(10)) == 0,
+            "1e500 半血 / 5÷10 / 0");
+        Check("层数与强化上限都放到 100,000",
+            Limits.MaxLayer == 100000 && Limits.MaxEnhance == 100000 && Limits.MaxSoul == 100000,
+            $"{Limits.MaxLayer} / {Limits.MaxEnhance} / {Limits.MaxSoul}");
 
         // 3) 怪物曲线（3.4）
         Check("第 1 层 HP = 50", MobHp(g, 1).CompareTo(Big.Of(50)) == 0, Fmt.Large(MobHp(g, 1)));
         Check("第 100 层 HP ≈ 16.0K", Fmt.Large(MobHp(g, 100)) == "16.0K", Fmt.Large(MobHp(g, 100)));
         Check("第 9999 层 HP ≈ 9.6e+299（含墨潮）", MobHp(g, 9999).E == 299, Fmt.Large(MobHp(g, 9999)));
+
+        // 3.4b) 墨潮在 10,000 层封顶：万层之后回到 1.06 的正常曲线，
+        //       否则层数上限抬到 10 万后这条曲线会在 4.8 万层把怪血顶到 1.8e+3000 并 clamp
+        double stepUp = MobHp(g, 10000).Log10 - MobHp(g, 9999).Log10;   // 1.11 × 1.06
+        double stepAfter = MobHp(g, 10001).Log10 - MobHp(g, 10000).Log10; // 只 1.06
+        Check("墨潮到万层封顶：10,001 层只比 10,000 层多 ×1.06",
+            stepUp > 0.068 && stepUp < 0.073 && stepAfter > 0.023 && stepAfter < 0.028,
+            $"9,999→10,000 ×{Math.Pow(10, stepUp):0.00} · 10,000→10,001 ×{Math.Pow(10, stepAfter):0.00}");
+        Check("10 万层怪血仍在新上限内（不会提前 clamp）",
+            Game.MobHpOf(100000).CompareTo(Limits.Max) < 0 && Game.MobHpOf(100000).E > 2400,
+            Fmt.Large(Game.MobHpOf(100000)));
 
         // 4) 战斗推进（3.1/3.3）
         long k0 = g.S.TotalKills;
@@ -55,19 +107,49 @@ public static class SelfTest
 
         // 5) 金币袋（第七章）
         g.S.Bags.Clear();
+        g.S.DailyBags = 0;
         for (int i = 0; i < Game.BagKeys; i++) g.OnKeyPress();
         Check($"敲 {Game.BagKeys} 次掉 1 袋", g.S.Bags.Count == 1, $"袋 {g.S.Bags.Count}");
         var before = g.Gold;
         g.ClaimBags();
         Check("领取后金币增加", g.Gold.CompareTo(before) > 0, $"{Fmt.Large(before)} → {Fmt.Large(g.Gold)}");
 
-        // 袋值基准：2.5 只同层怪 × 等级乘区（原为 5 只，v0.12.2 按需求减半）
+        // 袋值基准：1.25 只同层怪 × 等级乘区（5.0 → 2.5 → v0.15.0 再减半到 1.25）
         var oneBag = g.BagValue(1);
         var bagExpect = Big.Clamp(Game.MobGold(g.Layer) * Game.BagMobMul * (1 + 0.015 * (g.Level - 1)));
-        Check("单袋金币 = 2.5 只怪 × 等级乘区", Math.Abs(oneBag.Log10 - bagExpect.Log10) < 1e-9,
+        Check($"单袋金币 = {Game.BagMobMul} 只怪 × 等级乘区", Math.Abs(oneBag.Log10 - bagExpect.Log10) < 1e-9,
             $"{Fmt.Large(oneBag)}（第 {g.Layer} 层 · Lv.{g.Level}）");
         for (int i = 0; i < Game.BagKeys * 25; i++) g.OnKeyPress();
         Check("待领上限 20 袋", g.S.Bags.Count <= 20, $"袋 {g.S.Bags.Count}");
+
+        // 5b) 每日掉袋上限 40 袋 = 20,000 敲（v0.15.0）
+        // 到顶后继续敲：今日敲击照涨，但不再掉袋，也别把 bagCounter 卡在半路。
+        g.S.Bags.Clear();
+        g.S.DailyKeys = 0;
+        g.S.DailyBags = 0;
+        for (int i = 0; i < Game.BagKeys * (Game.BagKeysPerDay + 5); i++) g.OnKeyPress();
+        Check($"每日最多掉 {Game.BagKeysPerDay} 袋",
+            g.S.DailyBags == Game.BagKeysPerDay, $"袋数 {g.S.DailyBags}");
+        Check("到顶后今日敲击照涨（礼包门槛不受影响）",
+            g.S.DailyKeys == (long)Game.BagKeys * (Game.BagKeysPerDay + 5), $"今日 {g.S.DailyKeys:N0}");
+        Check("到顶后不再产出新袋（待领已被 20 袋上限封住）",
+            g.S.Bags.Count <= 20, $"袋 {g.S.Bags.Count}");
+
+        // 5c) 「今日 N/40 袋」必须由今日敲击数派生（v0.17.1）
+        // 老存档里 DailyKeys 有值、DailyBags 是 0，界面于是出现「今日敲击 4,800」配「今日 0/40 袋」。
+        // 派生之后两边恒等，跨天/重开/老存档都不需要额外同步。
+        Check("今日上限 20,000 = 每日礼包最高档门槛",
+            Game.DailyKeyCap == Game.DailyTiers[^1], $"{Game.DailyKeyCap} vs {Game.DailyTiers[^1]}");
+
+        g.S.DailyKeys = 4800;
+        g.S.DailyBags = 0;                          // 伪造老存档：敲击有值、袋数没同步
+        Check("袋数由敲击数派生：4,800 敲 = 今日 9 袋",
+            g.BagsToday == 9, $"今日 {g.BagsToday} 袋");
+
+        g.S.DailyKeys = (long)Game.DailyKeyCap + 777;
+        g.S.DailyBags = 0;
+        Check("超上限后袋数仍封在 40（继续计数但不再掉袋）",
+            g.BagsToday == Game.BagKeysPerDay && g.BagsTodayFull, $"今日 {g.BagsToday} 袋");
 
         // 6) 商店与墨匣（5.7）
         g.AddGold(Big.Of(100000));
@@ -106,6 +188,29 @@ public static class SelfTest
         Check("max 后墨晶不足再升", g.MaxEnhanceable(1) == 0, $"剩余可升 {g.MaxEnhanceable(1)}");
         Check("连升总成本 = 逐级成本之和", g.EnhCostTotal(0, 5).CompareTo(Big.Zero) > 0,
             $"5 级共 {Fmt.Large(g.EnhCostTotal(0, 5))} 墨晶");
+
+        // 7b-2) 上限抬到 10 万之后：大额墨晶必须仍然算得出级数
+        //       （旧版 ToDouble 在 1e+308 饱和，可升级数会卡在 1.05 万不动）
+        var inkKeep2 = g.Ink;
+        int bladeKeep2 = g.S.EnhBlade;
+        g.S.EnhBlade = 0;
+        g.S.InkM = 1; g.S.InkE = 600;                      // 1e+600 墨晶
+        int bigCap = g.MaxEnhanceable(0);
+        Check("1e+600 墨晶算出 2 万级以上（旧上限下会卡在 1.05 万）",
+            bigCap > 20000 && bigCap < Limits.MaxEnhance, $"可升 {bigCap} 级");
+        int didBig = g.EnhanceMany(0, 20000);
+        Check("能一路升到 2 万级（不再有 1 万封顶）",
+            didBig == 20000 && g.EnhLevel(0) == 20000, $"墨刃 {g.EnhLevel(0)} 级");
+        g.S.EnhBlade = bladeKeep2;
+        g.S.InkM = inkKeep2.M; g.S.InkE = inkKeep2.E;
+
+        // 7b-3) 商店 max 档：金币远超 double 时数量级仍然对（不再饱和成 1e306）
+        var goldKeep2 = g.Gold;
+        g.S.GoldM = 5; g.S.GoldE = 500;                    // 5e+500 金币
+        var affordBig = g.AffordCount(Game.InkPrice);      // 25 金币一颗 → ≈2e+499
+        Check("5e+500 金币算出的 max 颗数数量级正确",
+            affordBig.E >= 498 && affordBig.E <= 500, Fmt.Large(affordBig));
+        g.S.GoldM = goldKeep2.M; g.S.GoldE = goldKeep2.E;
 
         // 7c) 等级与经验（4.1，v0.13.0 重做）：需求挂「本轮最高层单只经验 × 只数」
         int keepL0 = g.S.Layer, keepM0 = g.S.MaxLayer;
@@ -182,7 +287,9 @@ public static class SelfTest
 
         // 10) 上限夹取
         g.AddGold(Big.Pow(1.06, 20000));
-        Check("金币不会溢出（夹到 1.8e+303）", g.Gold.CompareTo(Limits.Max) <= 0, Fmt.Large(g.Gold));
+        Check("金币不会溢出（夹到 1.8e+3000）", g.Gold.CompareTo(Limits.Max) <= 0, Fmt.Large(g.Gold));
+        g.AddGold(Big.Pow(1.06, 140000));               // ≈1e+3593，越过新上限
+        Check("金币越过新上限后被夹回", g.Gold.CompareTo(Limits.Max) == 0, Fmt.Large(g.Gold));
 
         // 11) 存档往返
         g.Save();
@@ -287,40 +394,84 @@ public static class SelfTest
             Check("本命器次数档刷新", false, "自测异常：" + ex.GetBaseException().Message);
         }
 
-        // 13.5) 暴击：面板文案与实战必须同一份数值（60% 封顶、暴伤指数成长）
+        // 13.5) 暴击：面板文案与实战同一份数值（v0.16.1：暴击率仍分两层封顶，暴伤改为无上限、每级 +0.1%）
         try
         {
             var t = typeof(KeySpirit.UI.PanelWindow);
             var eff = t.GetMethod("EffectText",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
 
-            Check("墨眸 387 级起暴击率封顶 60%",
-                Math.Abs(Game.CritRateOf(387) - 0.60) < 1e-9,
-                Fmt.Pct(Game.CritRateOf(387), 2));
-            Check("暴伤每级 ×1.06（100 级 = 0.5×1.06^100）",
-                Math.Abs(Game.CritDmgOf(100) - 0.5 * Math.Pow(1.06, 100)) < 1e-6
-                && Game.CritDmgOf(0) == 0.5,
-                $"0 级 +50% · 100 级 ×{Fmt.Small(Big.Of(1 + Game.CritDmgOf(100)))}");
+            // 墨眸自身封 30%：200 级刚好喂满，再往上不涨（总暴击率 = 基础 2% + 30%）
+            Check("墨眸 200 级给满 30%、此后不再涨",
+                Math.Abs(Game.CritRateEyeOf(200) - 0.30) < 1e-9
+                && Math.Abs(Game.CritRateEyeOf(900) - 0.30) < 1e-9
+                && Math.Abs(Game.CritRateOf(200) - 0.32) < 1e-9,
+                $"墨眸 200 级 {Fmt.Pct(Game.CritRateEyeOf(200), 2)} · 合计 {Fmt.Pct(Game.CritRateOf(200), 2)}");
 
-            // 关键平衡断言：同样 100 级，墨眸的期望伤害必须与墨刃同一个数量级
-            // （旧版线性暴伤只有 1/68，指数成本买线性收益 = 废属性）
-            double eyeExp = 1 + Game.CritRateOf(100) * Game.CritDmgOf(100);
-            double bladeMul = Math.Pow(1.06, 100);
-            double ratio = eyeExp / bladeMul;
-            Check("墨眸与墨刃的百级回报同阶（旧版差 68 倍）",
-                ratio > 0.05 && ratio < 1.0, $"墨眸 ×{eyeExp:0.0} vs 墨刃 ×{bladeMul:0.0} → 比值 {ratio:0.00}");
+            // 全局仍封 60%：以后别的系统叠加也不许越线
+            Check("总暴击率全局封顶 60%（留给后续系统 30 个点）",
+                Math.Abs(Game.CritRateTotal(200, 0.30) - 0.60) < 1e-9
+                && Math.Abs(Game.CritRateTotal(200, 5.0) - 0.60) < 1e-9,
+                Fmt.Pct(Game.CritRateTotal(200, 0.30), 2));
 
-            string t500 = (string)eff.Invoke(null, new object[] { 2, 500, 100 })!;
-            Check("封顶后墨眸预览改报暴伤、不再出现 60% 以上的暴击率",
-                t500.Contains("暴伤") && !t500.Contains("75.00%"), t500);
+            // 暴伤：+50% 起、每级 +0.1%、**不封顶**（每级同一增量，一直能练）
+            Check("暴伤 +50% 起、每级 +0.1%、无上限",
+                Math.Abs(Game.CritDmgOf(0) - 0.5) < 1e-9
+                && Math.Abs(Game.CritDmgOf(200) - 0.7) < 1e-9
+                && Math.Abs(Game.CritDmgOf(1000) - 1.5) < 1e-9
+                && Math.Abs(Game.CritDmgOf(10000) - 10.5) < 1e-9,
+                $"200 级 ×{1 + Game.CritDmgOf(200):0.000} · 1000 级 ×{1 + Game.CritDmgOf(1000):0.000} · 10000 级 ×{1 + Game.CritDmgOf(10000):0.000}");
 
-            string t300 = (string)eff.Invoke(null, new object[] { 2, 300, 10 })!;
+            // 关键平衡断言：暴伤一旦能吃指数，迟早回到"一次暴击秒 boss"。
+            // 现在线性慢涨：10,000 级期望 ×4.4、哪怕顶到 10 万级也只有 ×33，
+            // 与历史指数版（墨眸 494 级就 ×9.5e+11、暴击即秒）完全不是一个量级。
+            double exp200 = 1 + Game.CritRateOf(200) * Game.CritDmgOf(200);
+            double expMax = 1 + Game.CritRateOf(10000) * Game.CritDmgOf(10000);
+            double expTop = 1 + Game.CritRateOf(100000) * Game.CritDmgOf(100000);
+            Check("期望倍率随等级单调增，1 万级 ≤×5、10 万级 ≤×40（都不会秒杀）",
+                exp200 > 1.1 && exp200 < 1.3 && expMax > exp200 && expMax < 5.0 && expTop < 40.0,
+                $"200 级 ×{exp200:0.00} · 1 万级 ×{expMax:0.00} · 10 万级 ×{expTop:0.00}");
+
+            // 墨眸不再"喂满即死钱"：到 350 级依旧能继续升（加的只是暴伤）
+            int eyeKeep = g.S.EnhEye;
+            g.S.EnhEye = 350;
+            g.AddInk(Big.Of(1e30));
+            bool over = g.Enhance(2);
+            Check("墨眸 350 级后仍可继续强化（暴伤无上限）",
+                over && g.EnhLevel(2) == 351 && g.MaxEnhanceable(2) > 0,
+                $"墨眸 {g.EnhLevel(2)} 级 · 可升 {g.MaxEnhanceable(2)}");
+            g.S.EnhEye = eyeKeep;
+
+            string tFull = (string)eff.Invoke(null, new object[] { 2, 500, 0 })!;
+            Check("暴击率到顶后标「暴击率满」，暴伤仍报三位小数且不出现「封顶」",
+                tFull.Contains("暴击率满") && !tFull.Contains("封顶") && tFull.Contains("×2.000"), tFull);
+
+            string tMid = (string)eff.Invoke(null, new object[] { 2, 100, 100 })!;
             Check("未封顶时预览同时给出在涨的暴击率与暴伤",
-                t300.Contains("暴击 47.00%") && t300.Contains("暴击 48.50%") && t300.Contains("暴伤"), t300);
+                tMid.Contains("暴击 17.00%") && tMid.Contains("32.00%") && tMid.Contains("暴伤"), tMid);
         }
         catch (Exception ex)
         {
             Check("暴击面板文案", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
+        // 13.55) 四件单价各有高低（v0.16.0）：生命最便宜 ＜ 伤害 ＜ 防御（与伤害同档）＜ 暴击（贵好多）
+        try
+        {
+            double hpC = g.EnhCost(1, 1).ToDouble();
+            double atkC = g.EnhCost(0, 1).ToDouble();
+            double defC = g.EnhCost(3, 1).ToDouble();
+            double critC = g.EnhCost(2, 1).ToDouble();
+            Check("首级单价：生命 ＜ 伤害 ＜ 防御 ＜ 暴击",
+                hpC < atkC && atkC < defC && defC < critC,
+                $"生命 {hpC:0.00} · 伤害 {atkC:0.00} · 防御 {defC:0.00} · 暴击 {critC:0.00} 墨晶");
+            Check("防御与伤害同档（1.15 倍以内），暴击贵 4 倍以上",
+                defC / atkC < 1.2 && critC / atkC >= 4.0,
+                $"防御 = 伤害 ×{defC / atkC:0.00} · 暴击 = 伤害 ×{critC / atkC:0.00}");
+        }
+        catch (Exception ex)
+        {
+            Check("四件单价排序", false, "自测异常：" + ex.GetBaseException().Message);
         }
 
         // 13.55) 防御：软减伤曲线（旧版减法减伤会在阈值处从「1 血/回合」跳到「按亿计」）
@@ -334,13 +485,13 @@ public static class SelfTest
                 $"{Fmt.Large(justBelow)} / 怪攻 {Fmt.Large(atk)}");
 
             var equal = Game.TakenDamage(atk, atk);                 // 防御 = 怪攻
-            Check("防御等于怪攻时受伤约为 1/4 怪攻",
-                Math.Abs(equal.ToDouble() / atk.ToDouble() - 0.25) < 0.01,
+            Check("防御等于怪攻时受伤约为 1/7 怪攻（v0.18.0：系数 3→6）",
+                Math.Abs(equal.ToDouble() / atk.ToDouble() - 1.0 / 7.0) < 0.01,
                 $"{equal.ToDouble() / atk.ToDouble():0.000} × 怪攻");
 
             var huge = Game.TakenDamage(atk, Big.Of(1e12));         // 防御碾压
-            Check("防御碾压时仍有 5% 下限受伤（力竭机制不能死）",
-                Math.Abs(huge.ToDouble() / atk.ToDouble() - 0.05) < 0.001,
+            Check("防御碾压时仍有 2% 下限受伤（力竭机制不能死）",
+                Math.Abs(huge.ToDouble() / atk.ToDouble() - 0.02) < 0.001,
                 $"{huge.ToDouble() / atk.ToDouble():0.000} × 怪攻");
 
             var tiny = Game.TakenDamage(atk, Big.Of(1));            // 防御形同虚设
@@ -365,22 +516,106 @@ public static class SelfTest
             Check("防御软减伤", false, "自测异常：" + ex.GetBaseException().Message);
         }
 
-        // 13.56) 精英 / 守层者的经验倍率：几千层时「两三只精英 = 一级」
+        // 13.55b) 生存口径（v0.18.0）：等级乘区只留给攻击
+        // 旧口径下生命额外乘了 LvMul（1289 级 = ×20.32），而怪物攻击一点乘区都不吃，
+        // 于是 619 层存档「生命/怪攻 = 949 倍」，一条命要 1.9 万回合才力竭（≈258 层），
+        // 休整、自动回退、力竭率表全成了死代码；防御更惨，67 倍怪攻算出的伤害被 5% 地板整个盖住。
+        try
+        {
+            int lvBak = g.S.Level, robeBak = g.S.EnhRobe, sealBak = g.S.EnhSeal, bladeBak = g.S.EnhBlade;
+            int rootBak = g.S.Root;
+            g.S.Root = 0;            // 前面的用例可能把墨根抬过，这里只测「等级乘区」这一项
+
+            g.S.Level = 1;
+            var hp1 = g.HpIfRobe(100); var def1 = g.DefIfSeal(100); var atk1 = g.AtkIfBlade(100);
+            g.S.Level = 900;
+            var hp9 = g.HpIfRobe(100); var def9 = g.DefIfSeal(100); var atk9 = g.AtkIfBlade(100);
+
+            Check("生命不吃等级乘区（899 级只多本体 LvHpGain×899 点）",
+                Math.Abs((hp9 - hp1).ToDouble() - Game.LvHpGain * 899) < 1e-6,
+                $"{Fmt.Small(hp1)} → {Fmt.Small(hp9)}（差 {Fmt.Small(hp9 - hp1)}）");
+
+            Check("防御不吃等级乘区（899 级只多本体 LvDefGain×899 点）",
+                Math.Abs((def9 - def1).ToDouble() - Game.LvDefGain * 899) < 1e-6,
+                $"{Fmt.Small(def1)} → {Fmt.Small(def9)}（差 {(def9 - def1).ToDouble():0.0}）");
+
+            // v0.19.0：等级乘区改成平方根级。必须精确核对公式，否则「越来越刮痧」这条
+            // 核心曲线一旦被谁改回线性，这里是唯一会叫的地方。
+            double mul9 = 1 + 0.015 * Math.Sqrt(899);
+            double blade100 = Math.Pow(1.06, 100) * 10;
+            Check("攻击等级乘区按平方根走（899 级 ×1.45，不再是 ×14.5）",
+                Math.Abs(atk1.ToDouble() - (blade100 + 10)) < 1e-6
+                && Math.Abs(atk9.ToDouble() - (blade100 + 909) * mul9) < 1e-6,
+                $"×{mul9:0.00}；{Fmt.Small(atk1)} → {Fmt.Small(atk9)}（×{atk9.ToDouble() / atk1.ToDouble():0.00}）");
+
+            // 用玩家真实档验证「一条命 8~12 层」（v0.18.1 按 2026-11-11 的存档：620 层 / 墨衣 550 / 墨印 547 / 1304 级）
+            g.S.Level = 1304; g.S.EnhRobe = 550; g.S.EnhSeal = 547; g.S.EnhBlade = 565;
+            var hp = g.HpIfRobe(g.S.EnhRobe);
+            var def = g.DefIfSeal(g.S.EnhSeal);
+            var matk = Game.MobAtk(619);
+            var taken = Game.TakenDamage(matk, def);
+            double ratioHp = hp.ToDouble() / matk.ToDouble();
+            double ratioDef = def.ToDouble() / matk.ToDouble();
+            double rounds = hp.ToDouble() / taken.ToDouble();
+
+            Check("生命/怪攻 从 949 倍收到 45~60 倍（v0.18.1 怪攻指数 1.0515）",
+                ratioHp > 45 && ratioHp < 60, $"{ratioHp:0} 倍");
+            Check("防御/怪攻 从 67 倍收到 1~2 倍（地板不再盖住墨印）",
+                ratioDef > 1 && ratioDef < 2, $"{ratioDef:0.00} 倍");
+            Check("一条命 400~650 回合（≈8~12 层，力竭机制复活）",
+                rounds > 400 && rounds < 650, $"{rounds:0} 回合");
+
+            // 13.55c) 怪攻指数（v0.18.1：1.05 → 1.0515）
+            // 旧值下「怪血 / 怪攻」在 620 层是 2944 倍、玩家一刀 = 怪 520 次攻击，
+            // 而且怪攻追不上墨衣（1.06），越往深处越安全（100 层 12.8 层 → 900 层 85.9 层）。
+            var mHp620 = Game.MobHpOf(620) * Game.MobKindAt(620, 1).HpMul;
+            var mAtk620 = Game.MobAtk(620) * Game.MobKindAt(620, 1).AtkMul;
+            Check("620 层怪攻约 1.9e+14（旧 1.05 时是 7.8e+13）",
+                mAtk620.ToDouble() > 1.6e14 && mAtk620.ToDouble() < 2.2e14,
+                $"{Fmt.Large(mAtk620)}");
+            Check("620 层怪血/怪攻 从 2944 倍收到 1000~1700 倍",
+                mHp620.ToDouble() / mAtk620.ToDouble() > 1000
+                && mHp620.ToDouble() / mAtk620.ToDouble() < 1700,
+                $"{mHp620.ToDouble() / mAtk620.ToDouble():0} 倍");
+
+            // 墨印在高层的边际收益：+1 级（×1.06）掉血百分比必须有可见下降
+            var taken2 = Game.TakenDamage(matk, def * 1.06);
+            double drop = (taken.ToDouble() - taken2.ToDouble()) / taken.ToDouble();
+            Check("619 层时 +1 级墨印掉血下降 ≥3%（旧口径是 0）",
+                drop > 0.03, $"−{drop * 100:0.0}%");
+
+            // 地板仍然兜底：防御碾压时 2%
+            var floored = Game.TakenDamage(matk, matk * 200);
+            Check("防御碾压时按 2% 怪攻兜底",
+                Math.Abs(floored.ToDouble() / matk.ToDouble() - 0.02) < 1e-6,
+                $"{floored.ToDouble() / matk.ToDouble():0.000} × 怪攻");
+
+            g.S.Level = lvBak; g.S.EnhRobe = robeBak; g.S.EnhSeal = sealBak; g.S.EnhBlade = bladeBak;
+            g.S.Root = rootBak;
+        }
+        catch (Exception ex)
+        {
+            Check("生存口径（v0.18.0）", false, "自测异常：" + ex.GetBaseException().Message);
+        }
+
+        // 13.56) 精英 / 守层者的经验倍率：v0.19.0 起是**常数**，不再随层数缩放
         try
         {
             g.S.Layer = 3000; g.S.MaxLayer = 3000;
             double k3 = g.ExpKills;                       // 3000 层要打几只小怪一级
-            Check("3000 层：2 只精英约等于一级",
-                Math.Abs(k3 / g.EliteExpMul - 2.0) < 0.6,
-                $"小怪 {k3:0.0} 只 / 精英 {g.EliteExpMul:0.0} 倍 → {k3 / g.EliteExpMul:0.00} 只精英一级");
-            Check("3000 层：1 只守层者约等于一级",
-                Math.Abs(k3 / g.KeeperExpMul - 1.0) < 0.05,
-                $"{k3 / g.KeeperExpMul:0.00} 只守层者一级");
+            Check("精英 ×2、守层者 ×4 是常数，不随层数缩放",
+                g.EliteExpMul == Game.EliteExpMulConst && g.KeeperExpMul == Game.KeeperExpMulConst,
+                $"3000 层：精英 ×{g.EliteExpMul:0.0} · 守层者 ×{g.KeeperExpMul:0.0}（小怪 {k3:0.0} 只/级）");
 
-            g.S.Layer = 1; g.S.MaxLayer = 1;
-            Check("第 1 层倍率不加成（前期保持打两只小怪升一级）",
-                g.EliteExpMul == 1.5 && g.KeeperExpMul == 3.0,
-                $"精英 ×{g.EliteExpMul:0.0} · 守层者 ×{g.KeeperExpMul:0.0}");
+            // 一层 = 8 小怪 + 精英 + 守层者 = 14 只当量；一层级数 = 14 / k。
+            // 旧版按 k 缩放倍率时它是 1.5 + 8/k，永远 ≥1.5，等级被锁死成层数三倍。
+            double perLayer3000 = (Game.MiniPerLayer + Game.EliteExpMulConst + Game.KeeperExpMulConst) / k3;
+            g.S.Layer = 72; g.S.MaxLayer = 72;
+            double k72 = g.ExpKills;
+            double perLayer72 = (Game.MiniPerLayer + Game.EliteExpMulConst + Game.KeeperExpMulConst) / k72;
+            Check("一层给的级数随深度递减（72 层 0.9 级 / 3000 层 0.16 级，没有 1.5 地板）",
+                perLayer72 < 1.0 && perLayer3000 < 0.2 && perLayer3000 < perLayer72,
+                $"72 层 {perLayer72:0.00} 级/层 · 3000 层 {perLayer3000:0.00} 级/层");
         }
         catch (Exception ex)
         {
@@ -453,12 +688,17 @@ public static class SelfTest
             Check("打赢一只就清掉连败计数（自动回退判的是「连败」）",
                 g.ConsecutiveLoss == 0, $"连败 {g.ConsecutiveLoss}");
 
-            var bagField = typeof(Game).GetField("bagCounter", FI)!;
-            bagField.SetValue(g, 299L);
+            // v0.17.1：掉袋进度不再单独存（判据 = 今日敲击 % 500），转生也就没有「旧层的敲击进度」要清。
+            // 这里改测两件事：转生不动当日敲击数；转生后下一袋照样在满 500 敲时掉。
+            g.S.DailyKeys = 999;
+            g.S.Bags.Clear();
             g.S.MaxLayer = 200; g.S.Layer = 1;
             g.Rebirth();
-            Check("转生清掉敲击掉袋进度（袋值按当前层算，不该带着旧层的）",
-                (long)bagField.GetValue(g)! == 0, $"残留 {bagField.GetValue(g)}");
+            Check("转生不动当日敲击数（掉袋进度已由当日敲击派生）",
+                g.S.DailyKeys == 999 && g.BagsToday == 1, $"今日 {g.S.DailyKeys} · 今日 {g.BagsToday} 袋");
+            g.OnKeyPress();          // 999 → 1,000：正好跨过一个 500 的整数倍
+            Check("转生后下一袋照样掉（袋值按转生后的层现算）",
+                g.S.Bags.Count == 1 && g.BagsToday == 2, $"袋 {g.S.Bags.Count} · 今日 {g.BagsToday} 袋");
             g.S.AutoDescend = true; g.S.LockLayer = false;
         }
         catch (Exception ex)
@@ -550,13 +790,14 @@ public static class SelfTest
 
             var gold0 = g.Gold;
             var ink0 = g.Ink;
-            int inkGain = g.DailyInk(0);
+            int inkGain0 = g.DailyInk(0);
             bool claimed = g.ClaimDaily(0);
-            Check("领 5,000 档：金币与墨晶入账、档位置领",
+            Check("领 5,000 档：只给金币、不给墨晶、档位置领",
                 claimed && g.DailyClaimed(0)
                        && (g.Gold - gold0).CompareTo(Big.Zero) > 0
-                       && (g.Ink - ink0).CompareTo(Big.Of(inkGain - 0.01)) > 0,
-                $"金币 {Fmt.Large(g.Gold - gold0)} · 墨晶 {Fmt.Large(g.Ink - ink0)}（应 +{inkGain}）");
+                       && inkGain0 == 0
+                       && (g.Ink - ink0).CompareTo(Big.Zero) == 0,
+                $"金币 {Fmt.Large(g.Gold - gold0)} · 墨晶 {Fmt.Large(g.Ink - ink0)}（应 +0）");
             Check("同一档不能重复领", !g.ClaimDaily(0), "已领");
 
             // 15.4 20000 档
@@ -572,9 +813,19 @@ public static class SelfTest
             Check("领金币袋不带走每日礼包",
                 g.DailyReady(1) && !g.DailyClaimed(1) && g.S.Bags.Count == 0,
                 $"mask {g.S.DailyMask} / 袋 {g.S.Bags.Count}");
+
+            // 20,000 档只给墨晶（v0.15.0）：金币一分不给，墨晶必须有
+            var gold1 = g.Gold;
+            var ink1 = g.Ink;
+            int inkGain1 = g.DailyInk(1);
             bool claimed2 = g.ClaimDaily(1);
             Check("手动点 20,000 档才入账", claimed2 && g.S.DailyMask == 0b11,
                 $"mask {g.S.DailyMask}");
+            Check("领 20,000 档：只给墨晶、不给金币",
+                inkGain1 > 0
+                && (g.Ink - ink1).CompareTo(Big.Zero) > 0
+                && (g.Gold - gold1).CompareTo(Big.Zero) == 0,
+                $"墨晶 {Fmt.Large(g.Ink - ink1)}（应 +{inkGain1}）· 金币 {Fmt.Large(g.Gold - gold1)}（应 +0）");
             Check("两档都领完后再无可领", !g.DailyReady(0) && !g.DailyReady(1), "已全领");
 
             // 15.6 今日数不受"领过"影响，只有跨零点才归零
@@ -620,19 +871,41 @@ public static class SelfTest
                 Check("已领档灰显（Dim #8D9AA6）", TextOf("5,000 档") == "#FF8D9AA6", TextOf("5,000 档"));
                 Check("未达档禁用色（#56606A）", TextOf("20,000 档") == "#FF56606A", TextOf("20,000 档"));
 
-                // 15.7b 进度文案的三种状态。旧实现把「两档都达标但都没领」说成「已全领」，
-                // 而下面两行明明都能点，属于自相矛盾。
+                // 15.7b 进度文案：分母恒为今日上限 20,000（= 40 袋 × 500 敲），
+                // 不再跟着「下一档门槛」跳；到顶后分母消失，只留还在涨的敲击数。
                 var progM = tp.GetMethod("DailyProgText",
                     NF | System.Reflection.BindingFlags.Static)!;
 
-                g.S.DailyKeys = 21360;
+                // 这条是玩家报的原图：4,800 敲时旧实现显示「4,800 / 5,000」，看着像今天只能敲 5,000
+                g.S.DailyKeys = 4800;
                 g.S.DailyMask = 0b00;
                 var prog = (string)progM.Invoke(null, null)!;
+                Check("4,800 敲时分母是 20,000 而不是 5,000",
+                    prog == "4,800 / 20,000", prog);
+
+                // 每日礼包**一天就两个**：5,000 档 1 次 + 20,000 档 1 次。
+                // 不是「每 5,000 敲领一次」，所以敲到 5 万也只会有这两行，不会冒出新档。
+                Check("每日礼包固定 2 档（5,000 / 20,000 各 1 次）",
+                    Game.DailyTiers.Length == 2 && Game.DailyTiers[0] == 5000 && Game.DailyTiers[1] == 20000,
+                    string.Join(" / ", Game.DailyTiers));
+
+                g.S.DailyKeys = 50000;
+                g.S.DailyMask = 0b01;          // 5,000 档今天已领，之后敲再多也不该重新亮
+                Check("领过的档敲再多也不会重新可领、也不会多出档位",
+                    !g.DailyReady(0) && g.DailyReady(1), $"mask {g.S.DailyMask} · 今日 {g.S.DailyKeys:N0}");
+                prog = (string)progM.Invoke(null, null)!;
+                Check("5 万敲时只提示剩下那 1 档可领", prog == "50,000 · 可领 1 档", prog);
+
+                g.S.DailyKeys = 21360;
+                g.S.DailyMask = 0b00;
+                prog = (string)progM.Invoke(null, null)!;
                 Check("两档都达标未领时文案显示「可领」", prog.Contains("可领"), prog);
+                Check("到顶后文案去掉 / 20,000 分母", !prog.Contains("/"), prog);
 
                 g.S.DailyMask = 0b11;
                 prog = (string)progM.Invoke(null, null)!;
-                Check("两档都领完才显示「已全领」", prog.Contains("已全领"), prog);
+                Check("到顶且全领只留敲击数（不带分母、不再说「已全领」）",
+                    prog == "21,360", prog);
             }
             catch (Exception ex) { Check("领取页状态", false, "自测异常：" + ex.GetBaseException().Message); }
 
@@ -640,7 +913,8 @@ public static class SelfTest
             g.Save();
             var saved = File.ReadAllText(Game.SavePath);
             Check("存档含今日敲击与领取标记",
-                saved.Contains("\"DailyKeys\"") && saved.Contains("\"DailyMask\"") && saved.Contains("\"DailyDate\""),
+                saved.Contains("\"DailyKeys\"") && saved.Contains("\"DailyMask\"") && saved.Contains("\"DailyDate\"")
+                && saved.Contains("\"DailyBags\""),
                 "save.json 字段齐全");
         }
         catch (Exception ex)
@@ -1012,9 +1286,9 @@ public static class SelfTest
         {
             // 21.1 曲线本身：层数越高等级越高，且与设计口径对得上
             double c100 = Game.LvCapAt(100), c386 = Game.LvCapAt(386), c9999 = Game.LvCapAt(9999);
-            Check("应得等级随层数递增，与设计口径一致（386 层 ≈ 940 级）",
+            Check("应得等级随层数递增，与设计口径一致（v0.19.0：386 层 ≈ 281 级）",
                 c100 < c386 && c386 < c9999
-                && Math.Abs(c386 - 940) < 3 && Math.Abs(c9999 - 17433) < 40,
+                && Math.Abs(c386 - 281) < 3 && Math.Abs(c9999 - 1652) < 40,
                 $"100 层 {c100:0} · 386 层 {c386:0} · 9999 层 {c9999:0}");
 
             var mig = typeof(Game).GetMethod("MigrateSave",
@@ -1050,6 +1324,28 @@ public static class SelfTest
             Check("初始化重置后的存档已带 Schema 标记",
                 g.S.Schema == Game.SaveSchema && g.S.Level == 1,
                 $"Schema {g.S.Schema} · Lv{g.S.Level}");
+
+            // 21.6 v2 的「墨眸收到 350 级」已作废（v0.16.1 暴伤取消封顶）：
+            //      旧档的高等级墨眸现在每级仍有 +0.1% 暴伤，必须原样保留；
+            //      另外三件也是老价买的，不重算。
+            g.S.Schema = 1;
+            g.S.EnhEye = 494; g.S.EnhBlade = 535; g.S.EnhRobe = 500; g.S.EnhSeal = 527;
+            mig.Invoke(g, null);
+            Check("旧档墨眸 494 级原样保留（不再按封顶收口），其余三件不动",
+                g.S.EnhEye == 494
+                && g.S.EnhBlade == 535 && g.S.EnhRobe == 500 && g.S.EnhSeal == 527
+                && g.S.Schema == Game.SaveSchema,
+                $"墨眸 {g.S.EnhEye} · 墨刃 {g.S.EnhBlade} · 墨衣 {g.S.EnhRobe} · 墨印 {g.S.EnhSeal} · Schema {g.S.Schema}");
+
+            // 21.7 已是 v2 的档（曾经被收到 350）跳过迁移也不再被二次收口
+            g.S.Schema = 2;
+            g.S.EnhEye = 800;
+            mig.Invoke(g, null);
+            Check("v2 旧档的墨眸 800 级不会被二次收口",
+                g.S.EnhEye == 800 && g.S.Schema == Game.SaveSchema,
+                $"墨眸 {g.S.EnhEye} · Schema {g.S.Schema}");
+
+            g.ResetAll();
         }
         catch (Exception ex)
         {

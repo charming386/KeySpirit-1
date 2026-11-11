@@ -16,6 +16,12 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# 必须先转绝对路径：下面用了 [IO.File]::ReadAllLines / WriteAllText，
+# 这两个 .NET API 走的是**进程工作目录**，不是 PowerShell 的 Set-Location。
+# 从别处（比如 IDE 的任务目录）调用本脚本时，两者不是同一个地方，
+# 相对路径会在第 2 步直接炸「未能找到路径」（v0.15.0 发版时踩过一次）。
+if (-not [IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $root $OutDir }
+
 if (-not (Test-Path $Dotnet)) { $Dotnet = "dotnet" }
 
 Write-Output "== 1/4 发布 =="

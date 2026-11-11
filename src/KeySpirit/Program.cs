@@ -20,8 +20,12 @@ public static class Program
         var argv = Environment.GetCommandLineArgs();
         int shotAt = Array.IndexOf(argv, "--shot");
         bool shot = shotAt >= 0 && shotAt + 1 < argv.Length;
+        // 崩溃复现：--click <页> <行关键字>，把鼠标事件真的发到那一行上（见 Repro.cs）
+        int clickAt = Array.IndexOf(argv, "--click");
+        bool click = clickAt >= 0 && clickAt + 2 < argv.Length;
         string mutexName = selfTest ? @"Global\KeySpirit_SelfTest"
                          : shot ? @"Global\KeySpirit_Shot"
+                         : click ? @"Global\KeySpirit_Repro"
                          : @"Global\KeySpirit_SingleInstance";
         using var mutex = new Mutex(true, mutexName, out bool created);
         if (!created) return;
@@ -46,6 +50,28 @@ public static class Program
         if (shot)
         {
             Shot.Run(argv[shotAt + 1]);
+            return;
+        }
+
+        if (click)
+        {
+            if (argv[clickAt + 1] == "full" && clickAt + 3 < argv.Length)
+            {
+                int hover = clickAt + 4 < argv.Length && int.TryParse(argv[clickAt + 4], out int h) ? h : 1700;
+                Repro.RunFull(argv[clickAt + 2], argv[clickAt + 3], hover);
+            }
+            else if (argv[clickAt + 1] == "soak")
+            {
+                int times = clickAt + 2 < argv.Length && int.TryParse(argv[clickAt + 2], out int n) ? n : 200;
+                Repro.RunSoak(times);
+            }
+            else if (argv[clickAt + 1] == "stall")
+            {
+                int sec = clickAt + 2 < argv.Length && int.TryParse(argv[clickAt + 2], out int s) ? s : 20;
+                Repro.RunStall(sec);
+            }
+            else
+                Repro.Run(argv[clickAt + 1], argv[clickAt + 2]);
             return;
         }
 
@@ -79,7 +105,23 @@ public static class Program
             Log.Write("未处理异常：" + e.Exception);
             e.Handled = true;
         };
-        app.Exit += (_, _) => tray.Dispose();
+        app.Exit += (_, _) =>
+        {
+            // 有这一行 = 程序自己走完了退出流程；没有 = 进程是被结束或直接没的。
+            // 「卡死闪退」那次日志里就没有这一行，靠它以后能一眼分辨。
+            Log.Write("程序退出（正常路径）");
+            tray.Dispose();
+        };
+
+        // 界面线程心跳：看门狗据此判断界面是否卡住（见 Diag.cs）
+        var uiBeat = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        uiBeat.Tick += (_, _) => Diag.UiAlive();
+        uiBeat.Start();
+        Diag.Start();
+
         app.Run();
     }
 }

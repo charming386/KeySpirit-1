@@ -9,7 +9,7 @@
     <AssemblyName>KeySpirit</AssemblyName>
     <RootNamespace>KeySpirit</RootNamespace>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>0.14.0</Version>
+    <Version>0.19.0</Version>
     <Product>键灵</Product>
     <AssemblyTitle>键灵</AssemblyTitle>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>

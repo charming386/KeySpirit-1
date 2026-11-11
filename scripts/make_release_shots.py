@@ -134,8 +134,8 @@ def main():
          "三围各有高低；类型前挂档位图标", a.version)
 
     card(os.path.join(raw, "03-claim.png"), os.path.join(out, "02-claim.png"),
-         "每日敲击与每日礼包：跨零点自动重置", "今日敲击按当日累计，5,000 / 20,000 两档达标可领；"
-         "两档都需手动点这一行领取，不会被金币袋批量带走", a.version)
+         "每日敲击与每日礼包：跨零点自动重置", "今日敲击按当日累计、上限 20,000（40 袋 × 500 敲），"
+         "到顶后只留数字并继续计数但不再掉袋；礼包固定两档、各限领一次", a.version)
 
     card(os.path.join(raw, "04-shop.png"), os.path.join(out, "03-shop.png"),
          "商店：单次数量一档控制", "1 / 10 / 100 / 1K / 1M / 1B / max 七档切换，"
