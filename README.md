@@ -4,13 +4,13 @@
 
 挂机自动打塔、自动变强；想看进度就右键托盘里的墨滴图标——弹出的是一块**仿 Windows 右键菜单**的面板（不是网页、不是新窗口），鼠标悬停展开子菜单，领取奖励、升装备、买东西、看数值都在里面点完。全程零弹窗、零任务栏按钮，挂后台基本感知不到。
 
-![界面预览](docs/release/v0.19.0/01-battle.png)
+![界面预览](docs/release/v0.26.0/01-battle.png)
 
 ---
 
 ## 下载
 
-到 [**Releases**](../../releases/latest) 页面下载 `KeySpirit-v0.19.0-win-x64.zip`，解压后双击 `KeySpirit.exe` 即可。
+到 [**Releases**](../../releases/latest) 页面下载 `KeySpirit-v0.26.0-win-x64.zip`，解压后双击 `KeySpirit.exe` 即可。
 
 - **免安装、绿色版**：不用装 .NET，解压即跑（自包含单文件）
 - 系统要求：**Windows 10 / 11 x64**
