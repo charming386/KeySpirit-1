@@ -33,9 +33,13 @@ Write-Output "== 1/3 出图专用发布 =="
 if ($LASTEXITCODE -ne 0) { throw "发布失败：多半是 dist\_shot 里的 dll 被占用" }
 
 Write-Output "== 2/3 逐页截图 =="
-# 刚 publish 完时 exe 偶发启动失败（无输出、无图），重试一次即可；仍失败才抛错
+# 刚 publish 完时 exe 偶发启动失败（无输出、无图），重试一次即可；仍失败才抛错。
+# 必须 Start-Process -Wait：KeySpirit 是 GUI 子系统程序，用 & 调用 PowerShell 不会等它退出，
+# 会直接进排版，于是排在后面的页面（如 11-fight-out）还没写出来就报 FileNotFoundError。
 for ($try = 1; $try -le 2; $try++) {
-    & "dist\_shot\KeySpirit.exe" --shot $raw
+    # 不加 -NoNewWindow：它要克隆当前环境变量字典，而本机同时存在 HTTPS_PROXY / https_proxy
+    # 两个只差大小写的键，PowerShell 5.1 会直接抛「已添加项」。GUI 程序本来也不需要共享控制台。
+    Start-Process -FilePath "dist\_shot\KeySpirit.exe" -ArgumentList @("--shot", "`"$raw`"") -Wait
     $made = @(Get-ChildItem -Path $raw -Filter *.png -ErrorAction SilentlyContinue).Count
     if ($made -ge 1) { break }
     Write-Output "  截图未产出（第 $try 次），重试…"

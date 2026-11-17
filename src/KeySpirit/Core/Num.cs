@@ -152,7 +152,10 @@ public static class Limits
     /// <summary>层数上限。10 万层时怪血 5.0e+2513，离 1.8e+3000 还有 487 个数量级。</summary>
     public const int MaxLayer = 100000;
 
-    /// <summary>墨根上限（转生累计）。正常玩法最多 0.35×层数，10 万层也只有 3.5 万。</summary>
+    /// <summary>
+    /// 墨根上限（转生累计）。正常玩法一次最多 0.175×层数（v0.20.0 起；原 0.35），
+    /// 10 万层转一次 1.75 万，上限留了足够余量。
+    /// </summary>
     public const int MaxSoul = 100000;
 
     /// <summary>本命器强化上限。四件统一，墨眸不再单列 —— 它是线性属性，没有被 1.06 的墙管。</summary>

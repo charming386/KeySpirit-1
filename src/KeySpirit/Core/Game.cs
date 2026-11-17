@@ -70,6 +70,90 @@ public class Game
 
     double roundAccum;
 
+    /// <summary>本只怪打到第几回合（1 起）。换怪归零，战斗详情页那列「#N」用它。</summary>
+    int roundNo = 1;
+
+    /// <summary>
+    /// 最近几回合的战斗流水（v0.25.0），最新的在最后一条。
+    /// 换怪（SpawnMob）时**不清空**、只把回合号归 1——「打死那一刀」正好记在换怪之前，
+    /// 清空等于把它一起抹掉（v0.25.0 自测里 300 回合少掉的 115 条就是这么丢的）。
+    /// </summary>
+    readonly List<RoundHit> roundHits = new();
+    public IReadOnlyList<RoundHit> RoundHits => roundHits;
+
+    /// <summary>最新一回合（一回合都还没打时为 null）。二级页「本回合」那两行读它。</summary>
+    public RoundHit? LastHit => roundHits.Count > 0 ? roundHits[roundHits.Count - 1] : null;
+
+    /// <summary>
+    /// 一回合里某一方的「分项来源」。
+    ///
+    /// **以后加机制（吸血、闪避、格挡、连击…）只走这三步，记录结构与界面都不用改：**
+    ///   ① 在枚举**末尾**追加一项——别插中间、别改已有数值（它要进日志、以后可能进存档）；
+    ///   ② 在 ResolveRound 里往对应一侧 Add 一条 HitPart；
+    ///   ③ 界面的 HitStyle() 里登记「显示名 / 颜色 / 符号」，**不登记也能跑**（回落默认样式）。
+    /// 两个已经想好的例子，加进来都不需要动结构：
+    ///   · 吸血 → 加 Lifesteal，记进 Dealt 侧但**不计入** DealtTotal（它算回血，不算对怪伤害）；
+    ///   · 闪避 → 加 Dodge，Amount 记 0 但界面照样得显示一行「闪避」。
+    /// 之所以能这么加，是因为**没有任何一处是「把分项加起来当总数」**（见 RoundHit 的注释）。
+    /// </summary>
+    public enum HitKind
+    {
+        /// <summary>基础值：我对怪是「攻击 − 怪防×0.5」，怪对我是「怪攻」。</summary>
+        Base = 0,
+        /// <summary>暴击附加（只在「我对怪」一侧出现）。</summary>
+        Crit = 1,
+        /// <summary>被减伤掉的部分（只在「怪对我」一侧出现，= 怪攻 − 实际承受）。</summary>
+        Mitigate = 2,
+    }
+
+    /// <summary>
+    /// 分项：来源 + 数值。数值恒非负（Big 本身没有负数），正负号由界面按 Kind 决定——
+    /// 「暴击 +590」和「减伤 −380」在数据里都是正数，是两件不同性质的事，不该靠符号混存。
+    /// </summary>
+    public readonly record struct HitPart(HitKind Kind, Big Amount);
+
+    /// <summary>
+    /// 一回合的战斗记录：**两侧各一串分项**，净结果单独存。
+    ///
+    /// 净结果为什么不按分项求和：以后的分项未必都进伤害（吸血是回血、闪避要显示但值是 0），
+    /// 一求和就把它们算错了。现在三项恰好满足「对怪 = 基础 + 暴击」「承受 = 怪攻 − 减伤」，
+    /// 但那是**当前机制的巧合，不是不变式**，所以不写成求和。
+    /// </summary>
+    public sealed class RoundHit
+    {
+        /// <summary>这一只怪打到第几回合（换怪归 1）。</summary>
+        public int No;
+        /// <summary>这一刀打死了：怪没还手，所以 Taken 为空。</summary>
+        public bool Killed;
+        /// <summary>我方 → 敌方 的净伤害。</summary>
+        public Big DealtTotal;
+        /// <summary>敌方 → 我方 的净伤害（掉血）。</summary>
+        public Big TakenTotal;
+        /// <summary>我方 → 敌方 的分项。</summary>
+        public readonly List<HitPart> Dealt = new();
+        /// <summary>敌方 → 我方 的分项。</summary>
+        public readonly List<HitPart> Taken = new();
+    }
+
+    /// <summary>
+    /// 只留最近 8 回合。再多也看不出新信息（同一只怪的基础伤害是常数，变的只有暴击和血量余量），
+    /// 而三级页的行高就那么多（见 PanelWindow.BuildFightLog）。
+    /// </summary>
+    public const int RoundLogMax = 8;
+
+    /// <summary>
+    /// 一侧最多记几个分项。这是**界面能画下的上限**，不是记录上限：
+    /// 三级页每行给分项留了 3 个坑（多出来的不画，但记录里仍在）。
+    /// 加机制时如果某一侧会超 3 项，改这里的同时把三级页那个格子加宽。
+    /// </summary>
+    public const int HitPartsMax = 3;
+
+    void PushHit(RoundHit h)
+    {
+        roundHits.Add(h);
+        if (roundHits.Count > RoundLogMax) roundHits.RemoveAt(0);
+    }
+
     public event Action? Changed;
 
     [JsonIgnore] public int Layer => S.Layer;
@@ -115,6 +199,17 @@ public class Game
     public static Big MobDef(int n) => Big.Clamp(Big.Pow(1.03, n - 1) * (2 * MoChao(n)));
     public static Big MobGold(int n) => Big.Clamp(Big.Pow(1.06, n - 1) * (5 * MoChao(n)));
     public static Big MobExp(int n) => Big.Clamp(Big.Pow(1.05, n - 1) * (12 * MoChao(n)));
+
+    // ---- 档位三围倍率（3.4）----
+    // 每个物种还有一层 ±15% 的胖瘦浮动（下表），两者**相乘**：档位倍率决定「这一档该有多硬」，
+    // 物种倍率只决定「同档里这只偏胖还是偏瘦」，同池均值恒为 1.00，所以档位倍率才是曲线的唯一来源。
+    //
+    // v0.23.0 之前这三条**只有 HP 做了**（精英 ×1.6、守层者 ×2.5 硬编码在 SpawnMob 里），
+    // 攻防两档全是 1.00 —— 结果界面上精英/守层者的攻击、防御数字跟小怪一字不差，
+    // 只有血条长短不同，玩家看不出这是硬仗。设计稿 3.4 一直写着「守层者攻 ×1.3」，属于漏实现。
+    // 现在攻防倍率一起补上，并整体拉到「一眼能认出」的量级。
+    public const double EliteHpMul = 2.0,  EliteAtkMul = 1.15, EliteDefMul = 1.1;
+    public const double KeeperHpMul = 4.0, KeeperAtkMul = 1.6, KeeperDefMul = 1.3;
 
     /// <summary>
     /// 怪物种类（3.4）。倍率乘在本层基准值上，**同池均值恰好 = 1.000**，
@@ -184,9 +279,20 @@ public class Game
     [JsonIgnore] public string MobType => Mob.Type;
     /// <summary>本层第几只是它（1~10）。</summary>
     [JsonIgnore] public int MobNo => MobIndex;
-    /// <summary>怪物实际的攻防（已乘种类倍率）——战斗用它，界面也用它，两处必须同一个来源。</summary>
-    [JsonIgnore] public Big MobAtkNow => Big.Clamp(MobAtk(S.Layer) * Mob.AtkMul);
-    [JsonIgnore] public Big MobDefNow => Big.Clamp(MobDef(S.Layer) * Mob.DefMul);
+    /// <summary>层内第 5 只是精英、第 10 只是守层者（3.4）。</summary>
+    [JsonIgnore] public bool IsElite => MobIndex == 5;
+    [JsonIgnore] public bool IsKeeper => MobIndex >= 10;
+    /// <summary>当前这只的档位三围倍率（小怪 1.00）。HP 也走这里，免得三处各写一份。</summary>
+    [JsonIgnore] public double TierHpMul => IsKeeper ? KeeperHpMul : IsElite ? EliteHpMul : 1.0;
+    [JsonIgnore] public double TierAtkMul => IsKeeper ? KeeperAtkMul : IsElite ? EliteAtkMul : 1.0;
+    [JsonIgnore] public double TierDefMul => IsKeeper ? KeeperDefMul : IsElite ? EliteDefMul : 1.0;
+    /// <summary>
+    /// 怪物实际的攻防（已乘**档位倍率 × 种类倍率**）——战斗用它，界面也用它，两处必须同一个来源。
+    /// 档位那一层不能只乘 HP：攻防不涨的话，守层者只是「站得久的木桩」，玩家挨打速度一点没变，
+    /// 面板上三档数字还长得一模一样。
+    /// </summary>
+    [JsonIgnore] public Big MobAtkNow => Big.Clamp(MobAtk(S.Layer) * TierAtkMul * Mob.AtkMul);
+    [JsonIgnore] public Big MobDefNow => Big.Clamp(MobDef(S.Layer) * TierDefMul * Mob.DefMul);
 
     public Big PlayerAtk => CalcAtk();
     public Big PlayerDef => CalcDef();
@@ -204,7 +310,15 @@ public class Game
     /// 之所以不直接砍系数，是因为砍系数会把前期一起砍死（前 10 层就变 8 回合，开局就闷）。
     /// </summary>
     Big LvMul => Big.Of(1 + 0.015 * Math.Sqrt(S.Level - 1));
-    Big RootMul => Big.Pow(1.06, S.Root);
+    /// <summary>
+    /// 墨根乘区：**每点 +5%**，攻/血/防**全都吃**（v0.20.0 由 6% 降到 5%）。
+    ///
+    /// 为什么从 6% 退到 5%：墨根和墨刃同一个基数，**1 点墨根 ≡ 1 级墨刃 ≡ 能多推 1 层**。
+    /// 6% 时一个转生（200 层给 70 点）等于白送 70 层推进力，转生后一击能秒到 163 层；
+    /// 降到 5% 后同一点数只值 0.84 层，配合 RebirthGain 减半，秒到层数压到 115 层。
+    /// 6% 本身不算错（墨刃/墨衣/墨印都还是 6%），错的是「指数收益 × 线性产出」叠起来太快。
+    /// </summary>
+    public Big RootMul => Big.Pow(1.05, S.Root);
 
     // ---- 等级加点（v0.13.0）----
     // 等级不再只是乘区：每级直接给基础攻/血/防加一点「本体数值」。
@@ -223,6 +337,21 @@ public class Game
     public Big BaseAtk => Big.Clamp(Big.Of(10 + LvAtkGain * (S.Level - 1)));
     public Big BaseHp => Big.Clamp(Big.Of(100 + LvHpGain * (S.Level - 1)));
     public Big BaseDef => Big.Clamp(Big.Of(3 + LvDefGain * (S.Level - 1)));
+
+    // ---- 墨根对单项属性的绝对贡献（v0.22.0，详情页逐行拆解用）----
+    //
+    // 详情页原来只有一行「墨根 35（×5.52）」，而生命/攻击/防御三行都写着「本体 X」——
+    // 那个「本体」是**等级加点**，既不含墨衣/墨刃强化，也不含墨根。于是玩家看到
+    // 「攻击 3.2e+14（本体 45）」时，根本分不清剩下的 3.2e+14 里多少是墨根、多少是自己点的墨刃。
+    // 这三个属性补上的就是那块：附在对应属性行下面写「墨根 +Y」。
+    //
+    // 算法 = 含量 − 去掉墨根的量。墨根是统一乘区，所以三项的**占比恒等**
+    // （都是 `1 − 1/RootMul`），差异只在绝对值 —— 因此面板只逐行写绝对值，
+    // 百分比留在「墨根」那一行，避免三行重复同一个数。
+    // 墨根为 0 时三项都是 0，面板据此整段不显示（前期不该被三行「+0」占位置）。
+    public Big HpRootGain { get { if (S.Root <= 0) return Big.Zero; var v = CalcHp(); return v - v / RootMul; } }
+    public Big AtkRootGain { get { if (S.Root <= 0) return Big.Zero; var v = CalcAtk(); return v - v / RootMul; } }
+    public Big DefRootGain { get { if (S.Root <= 0) return Big.Zero; var v = CalcDef(); return v - v / RootMul; } }
 
     /// <summary>
     /// 「假如这一件已经到 lv 级」时的最终属性：**本体值 + 强化 +（攻击的）等级乘区 + 墨根乘区**。
@@ -435,12 +564,16 @@ public class Game
     void SpawnMob()
     {
         int n = S.Layer;
-        // 基准值 × 种类倍率（同一层内 10 只均值 = 基准，故总体曲线不变）
-        var hp = MobHpOf(n) * MobKindAt(n, MobIndex).HpMul;
-        if (MobIndex == 5) hp = hp * 1.6;
-        else if (MobIndex == 10) hp = hp * 2.5;
+        // 基准值 × 档位倍率 × 种类倍率（同一层内 9 小怪 + 精英 + 守层者的均值按档位加权，
+        // 不再等于基准 —— 这是 v0.23.0 故意的，档位差别必须能吃出来）
+        var hp = MobHpOf(n) * TierHpMul * MobKindAt(n, MobIndex).HpMul;
         MobHpMax = Big.Clamp(hp);
         MobHp = MobHpMax;
+        // 回合号从 1 重新数，但**不清空刚打完那只的流水**：
+        // 换怪是在 KillMob 里发生的，而「打死那一刀」正是最后记下的那条 —— 在这里 Clear
+        // 等于把最后一刀抹掉，玩家永远看不到它（自测里 300 回合少掉的 115 条就是这么来的）。
+        // 现在纯靠 8 条上限自然顶掉旧的，界面用「#1」标出换了一只（见 PanelWindow.BuildBattle）。
+        roundNo = 1;
     }
 
     public void ResetFight()
@@ -448,6 +581,7 @@ public class Game
         HpMax = CalcHp();
         Hp = HpMax;
         MobIndex = 1;
+        roundHits.Clear();   // 重置战斗是真的重开：上一局的流水不该跨过来
         SpawnMob();
         roundAccum = 0;
     }
@@ -490,17 +624,44 @@ public class Game
         var atk = PlayerAtk;
         var dmg = atk - MobDefNow * 0.5;
         if (dmg.CompareTo(Big.Zero) < 0) dmg = Big.Of(1);
+        // 暴击前的基础伤害要留一份：界面要分开列「基础」和「暴击多加了多少」。
+        // 直接拿 dmg 乘出来的结果只能看到总数，看不出暴击贡献（v0.25.0）。
+        var baseDmg = dmg;
         bool crit = Rng.NextDouble() < CritRate;
-        if (crit) dmg = dmg * (1 + CritDmg);
+        var critAdd = Big.Zero;
+        if (crit)
+        {
+            dmg = dmg * (1 + CritDmg);
+            critAdd = dmg - baseDmg;
+        }
         MobHp = MobHp - dmg;
+
+        // 一条流水两侧都记（v0.26.0）：二级页「对怪」「受击」是两行、两个三级页，
+        // 但读的是同一条记录 —— 同一个 #N 在两页里对得上，不用玩家自己拼回合号。
+        var hit = new RoundHit { No = roundNo++, DealtTotal = dmg };
+        hit.Dealt.Add(new HitPart(HitKind.Base, baseDmg));
+        if (critAdd.CompareTo(Big.Zero) > 0) hit.Dealt.Add(new HitPart(HitKind.Crit, critAdd));
+
         if (MobHp.CompareTo(Big.Zero) <= 0)
         {
+            // 这一刀打死了：怪没机会还手，受击侧留空。界面靠 Killed 写「打死」而不是「受 0」。
+            hit.Killed = true;
+            PushHit(hit);
             KillMob();
             return;
         }
 
-        // 怪物反击
-        Hp = Hp - TakenDamage(MobAtkNow, PlayerDef);
+        // 怪物反击：怪攻 → 减伤 → 实际掉血，三段都留。
+        // 只记「掉血」的话，高防御时看到「1.0K」会以为是怪太弱，看不出是自己的护甲在干活。
+        var mobAtk = MobAtkNow;
+        var taken = TakenDamage(mobAtk, PlayerDef);
+        Hp = Hp - taken;
+        hit.TakenTotal = taken;
+        hit.Taken.Add(new HitPart(HitKind.Base, mobAtk));
+        var cut = mobAtk - taken;
+        if (cut.CompareTo(Big.Zero) > 0) hit.Taken.Add(new HitPart(HitKind.Mitigate, cut));
+        PushHit(hit);
+
         if (Hp.CompareTo(Big.Zero) <= 0) Exhaust();
     }
 
@@ -545,8 +706,8 @@ public class Game
         // 经验倍率随层数放大，金币倍率保持 1.5 / 3 不变（金币是经济，经验是节奏，两件事）。
         // 目的：几千层时「两三只精英 = 一级」「一只守层者 = 一级」，与设计稿 4.1 的口径对齐；
         // 低层（ExpKills 还小）不加成，保持「打两只小怪升一级」的前期手感。
-        if (MobIndex == 5) { g = g * 1.5; e = e * EliteExpMul; ink = Big.Of(1); }
-        else if (MobIndex == 10) { g = g * 3; e = e * KeeperExpMul; ink = Big.Of(3); }
+        if (IsElite) { g = g * 1.5; e = e * EliteExpMul; ink = Big.Of(1); }
+        else if (IsKeeper) { g = g * 3; e = e * KeeperExpMul; ink = Big.Of(3); }
         AddGold(g);
         AddInk(ink);
         AddExp(e);
@@ -658,10 +819,10 @@ public class Game
 
     /// <summary>
     /// 一个金币袋折合多少只同层怪的金币（第七章）。
-    /// 沿革：5.0 → 2.5（v0.12.2，打字收入过重）→ **1.25**（v0.15.0，再减半）。
+    /// 沿革：5.0 → 2.5（v0.12.2，打字收入过重）→ 1.25（v0.15.0，再减半）→ **1.15**（v0.24.0，小幅回收）。
     /// 两次都只砍袋值，不动品质倍率（×1 / ×2.5 / ×6）。
     /// </summary>
-    public const double BagMobMul = 1.25;
+    public const double BagMobMul = 1.15;
 
     /// <summary>单袋金币（含等级乘区与品质倍率）。袋值与每日礼包共用同一把尺子。</summary>
     public Big BagValue(double mult)
@@ -696,37 +857,65 @@ public class Game
     public bool DailyClaimed(int tier)
         => tier >= 0 && tier < DailyTiers.Length && (S.DailyMask & (1 << tier)) != 0;
 
+    // ---- 每日礼包定标（4.x）----
+    //
+    // 旧写法两档各用一把尺子：金币 `单只金币 × 60 × 等级乘区`（指数），
+    // 墨晶 `clamp(30 + 最高层/4, 30, 150)`（线性 + 480 层封顶）。
+    // 两者差距随层数指数拉开——336 层时墨晶档只够升 0.00006 级（等于空包），
+    // 金币档却够升 12 级；到 1000 层金币档够升 294 级、墨晶档还是 150 颗。
+    //
+    // v0.24.0 起两档改问同一句话：**「这一档该值多少级强化」，再乘回成本**。
+    // 折级数因此不随层数漂移，多深都是 14 / 20 级。
+    //
+    // 定标基准必须用**当前墨刃等级**而不是层数：等级 ≈ 17.5√层（有 log 修正），
+    // 与层数之比在 0.77 → 0.48 之间变化，拿层数乘系数照样会漂。
+    /// <summary>5,000 档折合几级本命器（金币形态：按商店价折成金币发放）。</summary>
+    public const int DailyGoldLevels = 14;
+    /// <summary>20,000 档折合几级本命器（墨晶形态：直接发墨晶）。</summary>
+    public const int DailyInkLevels = 20;
+
     /// <summary>
-    /// 礼包金币：按当前层单只金币缩放，与金币袋同一把尺子（同样吃等级乘区）。
+    /// 从墨刃第 <paramref name="fromLevel"/> 级起再升 <paramref name="levels"/> 级的墨晶成本。
+    ///
+    /// 用墨刃（EnhFactor 1.00）当标准尺子：四件里墨衣 0.70 更便宜、墨眸 5.00 贵五倍，
+    /// 墨刃居中，所以这笔量既不会让便宜那件白送、也不会在贵那件上毫无意义。
+    /// 同一笔墨晶平摊到墨眸上会少好几级——这是「越来越刮痧」该有的样子。
+    /// </summary>
+    Big EnhLevelsCost(int fromLevel, int levels)
+        => Big.Clamp(Big.Pow(EnhRate, fromLevel) * 2
+                     * ((Big.Pow(EnhRate, levels) - Big.Of(1)) / EnhRateMinus1));
+
+    /// <summary>
+    /// 礼包金币 = 「<see cref="DailyGoldLevels"/> 级的强化成本」按商店价（<see cref="InkPrice"/>）折成金币。
     /// **v0.15.0 起只有 5,000 档给金币**；20,000 档改成纯墨晶，返回 0。
     /// 两档都给金币时，低档那份纯粹是"顺手加成"，反而把两档的差异抹平了。
     /// </summary>
     public Big DailyGold(int tier)
         => tier == 0
-           ? Big.Clamp(MobGold(S.Layer) * 60 * (1 + 0.015 * (S.Level - 1)))
+           ? Big.Clamp(EnhLevelsCost(S.EnhBlade, DailyGoldLevels) * InkPrice)
            : Big.Zero;
 
     /// <summary>
-    /// 礼包墨晶：随本轮最高层缓慢长，封顶——前期是真保底，后期不抢商店生意。
-    /// **v0.15.0 起只有 20,000 档给墨晶**（5,000 档返回 0）：墨晶是强化材料、不吃等级乘区，
-    /// 放到低档等于让"稍微敲几下"就能白拿素材，商店那条金币→墨晶的主链会被绕开。
+    /// 礼包墨晶 = 「<see cref="DailyInkLevels"/> 级的强化成本」，与金币档同一把尺子、只是形态不同。
+    /// **v0.15.0 起只有 20,000 档给墨晶**（5,000 档返回 0）。
+    /// 返回 Big：336 层就是 3.4e10 颗，旧版 int 装不下（21 亿封顶会直接截断）。
     /// </summary>
-    public int DailyInk(int tier)
-        => tier == 0 ? 0 : Math.Clamp(30 + S.MaxLayer / 4, 30, 150);
+    public Big DailyInk(int tier)
+        => tier == 0 ? Big.Zero : EnhLevelsCost(S.EnhBlade, DailyInkLevels);
 
     public bool ClaimDaily(int tier, bool silent = false)
     {
         if (!DailyReady(tier)) return false;
         var gold = DailyGold(tier);
-        int ink = DailyInk(tier);
+        var ink = DailyInk(tier);
         if (gold.CompareTo(Big.Zero) > 0) AddGold(gold);
-        if (ink > 0) AddInk(Big.Of(ink));
+        if (ink.CompareTo(Big.Zero) > 0) AddInk(ink);
         S.DailyMask |= 1 << tier;
         if (!silent)
         {
             var parts = new List<string>();
             if (gold.CompareTo(Big.Zero) > 0) parts.Add($"金币 +{Fmt.Large(gold)}");
-            if (ink > 0) parts.Add($"墨晶 +{ink}");
+            if (ink.CompareTo(Big.Zero) > 0) parts.Add($"墨晶 +{Fmt.Large(ink)}");
             Log.Write($"每日礼包（{DailyTiers[tier]:N0} 档）：{string.Join(" · ", parts)}");
         }
         Changed?.Invoke();
@@ -818,11 +1007,15 @@ public class Game
     public static int EnhCapOf(int which) => Limits.MaxEnhance;
 
     /// <summary>
-    /// 每级成本倍率。v0.13.0 由 1.062 上调到 **1.07**：
-    /// 原值只比金币收入（×1.06/层）快 0.2%，等级乘区一补就把差距吃掉，等于没有墙；
-    /// 1.07 让每 10 级相对变弱约 9%，玩家才真的会在某个层数停下来考虑转生。
+    /// 每级成本倍率。v0.13.0 由 1.062 上调到 1.07，**v0.21.0 再上调到 1.08**。
+    ///
+    /// 1.07 的问题是它只比金币收入（×1.06/层）快 1%，于是本命器等级会自动稳在
+    /// **0.86 × 层数**：玩家既不用攒墨晶，也不用决定先喂哪一件，强化等于「跟着层数自动发」。
+    /// 这跟 v0.19.0 修掉的「等级 = 3×层数」是同一个病，只是换了个系统。
+    /// 1.08 把这个自动追平压到约 0.71 × 层数——墨晶才真的变成要攒、要分配的资源。
+    /// （倍率本身仍是同一个旋钮：调大更刮痧，调小更爽。）
     /// </summary>
-    public const double EnhRate = 1.07;
+    public const double EnhRate = 1.08;
     const double EnhRateMinus1 = EnhRate - 1;
 
     public Big EnhCost(int which, int level)
@@ -1125,18 +1318,54 @@ public class Game
     }
 
     // ---- 转生（第六章）----
-    public bool CanRebirth => S.MaxLayer >= 50;
-    public int RebirthGain => Math.Max(1, (int)Math.Floor(0.35 * S.MaxLayer));
+    /// <summary>第一次转生的解锁层数。</summary>
+    public const int RebirthGateBase = 50;
 
     /// <summary>
-    /// 转生。界线是「能不能带走」：**现金没收，投入保留**。
+    /// 每转生一次，下一轮的解锁线抬多少层。**v0.21.0 新增，用来堵「浅层刷墨根」**。
     ///
-    /// 金币、墨晶、待领金币袋清零；四件强化等级、墨根、统计、设置、每日领取位全部保留。
-    /// 理由是喂进强化里的墨晶已经变成永久等级，那属于「投入」；而躺在账上的钱是「现金」，
-    /// 它随着重推的指数收入会迅速缩成零头，留着只会让转生少一层"从头再来"的分量。
-    /// 顺带逼出一步正经决策：转生前把墨晶全喂进强化，带不走的才不该剩。
+    /// 旧版只要 50 层就能转生，且转生没有别的成本，于是最优策略变成「一到 50 层立刻转生」：
+    /// 实测 24 小时能转 **82 次**、攒 656 根墨根（×7.9e13 攻击，等效永久领先 549 层）。
+    /// 根因是墨根按层数**线性**给、推层耗时却**指数**涨：50 层每小时 7.83 根、
+    /// 125 层只有 1.58 根——深推反而不如浅刷，和设计稿「推到单层 10 分钟再转生」正好相反。
     ///
-    /// 待领金币袋必须一起清：袋子是按当前层算好值的，留着等于让玩家转生后领走旧层的钱。
+    /// 现在解锁线 = 50 + 25×已转生次数，强制每一轮都比上一轮更深，浅刷这条路直接封死。
+    /// 实测同样 24 小时：转生 82 → **11 次**，墨根 656 → 332。
+    /// </summary>
+    public const int RebirthGateStep = 25;
+
+    /// <summary>本轮转生的解锁层数：50 + 25×已转生次数（第 1 次 50、第 2 次 75、第 3 次 100…）。</summary>
+    public int RebirthGate => RebirthGateBase + RebirthGateStep * S.Rebirths;
+
+    public bool CanRebirth => S.MaxLayer >= RebirthGate;
+
+    /// <summary>
+    /// 转生给多少墨根：**每层 0.175 根**（v0.20.0 由 0.35 减半）。
+    ///
+    /// 这个系数直接等于「每次转生白送多少层推进力」：墨根 1 点 ≈ 1 层（见 RootMul）。
+    /// 0.35 时 200 层转生白拿 70 层，转生后从第 1 层一路秒到 163 层，前期全成了垃圾时间；
+    /// 减半后是 35 层、秒到 115 层，「重开一段、但明显更强」的落差才立得住。
+    /// 另一个后果是复合增长率：每轮推进力 0.35 时 ×1.35，0.175 时 ×1.175，
+    /// 十轮下来 17 倍 vs 4.7 倍 —— 后者才是挂机该有的节奏。
+    /// </summary>
+    public int RebirthGain => Math.Max(1, (int)Math.Floor(0.175 * S.MaxLayer));
+
+    /// <summary>
+    /// 转生。**v0.21.0 起界线改了：除墨根之外全部归零。**
+    ///
+    /// 旧口径是「现金没收，投入保留」——金币/墨晶/袋清零，四件本命器强化等级保留。
+    /// 那条规则有两个致命后果：
+    ///   · **转生几乎没有损失**（等级乘区是平方根级、本命器才是主力），于是转生变成纯赚的按钮，
+    ///     一到 50 层就按最优，24 小时能按 82 次；
+    ///   · 玩家的体感是「我转生了，怎么攻击还是 60 万」——因为 99.4% 的攻击来自墨刃（`1.06^119`），
+    ///     墨根只占 0.6%，转生带来的那点墨根在既有本命器面前完全是零头。
+    ///
+    /// 现在把四件强化一起归零，让**墨根成为唯一的跨轮资产**——这才是设计稿 3.x 那句
+    /// 「转生（墨根）是唯一的质变」该有的样子：重开一轮，只带着墨根变强。
+    /// 代价是每轮要重新喂墨晶，这正好是「转生之后重新玩一遍」应有的分量。
+    ///
+    /// 统计、设置、每日领取位、驻留层记录、今日敲击仍然保留（它们不是强度，清了只会让玩家困惑）。
+    /// 待领金币袋必须清：袋子是按当前层算好值的，留着等于让玩家转生后领走旧层的钱。
     /// </summary>
     public void Rebirth()
     {
@@ -1150,9 +1379,11 @@ public class Game
         var goldBefore = Gold;
         var inkBefore = Ink;
         int bagN = S.Bags.Count;
+        int b0 = S.EnhBlade, r0 = S.EnhRobe, e0 = S.EnhEye, s0 = S.EnhSeal;
         S.GoldM = 0; S.GoldE = 0;
         S.InkM = 0; S.InkE = 0;
         S.Bags.Clear();
+        S.EnhBlade = 0; S.EnhRobe = 0; S.EnhEye = 0; S.EnhSeal = 0;
 
         S.Layer = 1; S.MaxLayer = 0; S.Level = 1;
         S.ExpM = 0; S.ExpE = 0;
@@ -1163,7 +1394,8 @@ public class Game
         // 今日敲击是当日统计、与转生无关；袋值本来就按掉落那一刻的层数现算。
         ResetFight();
         Log.Write($"转生：墨根 +{gain}（累计 {S.Root}）· 清零金币 {Fmt.Large(goldBefore)} / 墨晶 {Fmt.Large(inkBefore)}"
-                  + (bagN > 0 ? $" / 金币袋 ×{bagN}" : ""));
+                  + (bagN > 0 ? $" / 金币袋 ×{bagN}" : "")
+                  + $" · 本命器归零（刃 {b0} / 衣 {r0} / 眸 {e0} / 印 {s0} → 0）");
         Changed?.Invoke();
     }
 

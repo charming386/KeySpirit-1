@@ -5,15 +5,15 @@
     python scripts/make_release_shots.py --version v0.12.1
 
 产出（docs/release/<版本>/*.png）：
-    01-battle.png   战斗详情（怪物种类 + 图标 + 固定红血条）
-    02-claim.png    每日敲击与两档每日礼包
-    03-shop.png     商店「单次数量」一档控制
-    04-hp.png       玩家血条三档配色对比
-    05-bars.png     （可选）主面板整体
+    01-battle.png      战斗详情（怪物种类 + 图标 + 固定红血条 + 本回合两行入口）
+    02-fight-out.png   战斗详情 › 我对怪（三级页，回合 / 基础 / 暴击 / 总伤）
+    03-fight-in.png    战斗详情 › 怪对我（三级页，回合 / 怪攻 / 减伤 / 掉血）
+    04-claim.png       每日敲击与两档每日礼包（v0.24.0 起按「折合几级强化」定标）
+    09-hp.png          玩家血条三档配色对比（界面配色有改动时才要）
 
 为什么单独做这一步：--shot 出的是透明底原始控件图，尺寸随面板高度变，
 直接扔进 README 会出现大块空白和大小不一。这里统一成同宽卡片，
-标题/说明文字进图，正文里就只需要一行 ![](...)。
+标题/说明文字进图，正文里就只需要一行 ![](…)。
 """
 import argparse
 import os
@@ -54,13 +54,33 @@ def load(path):
     return im
 
 
+def wrap_text(text, f, maxw):
+    """按像素宽度折行。中文没有空格不能按词断，只能逐字量（getlength 是精确宽度）。"""
+    lines, cur = [], ""
+    for ch in text:
+        if not cur or f.getlength(cur + ch) <= maxw:
+            cur += ch
+        else:
+            lines.append(cur)
+            cur = ch
+    if cur:
+        lines.append(cur)
+    return lines
+
+
 def card(src, out, title, note, version):
     shot = load(src)
     maxw = W - PAD * 2
     if shot.width > maxw:
         shot = shot.resize((maxw, round(shot.height * maxw / shot.width)), Image.LANCZOS)
 
-    top, bottom = 104, 92
+    # 说明文字按画布宽折行：写长了直接被裁掉（v0.26.0 的礼包那张就溢出去了），
+    # 靠人肉控字数迟早再犯，索性交给排版。
+    f_note = font(17)
+    lines = wrap_text(note, f_note, maxw)
+    lh = 26
+    top = 104
+    bottom = 30 + len(lines) * lh + 26
     im = canvas(top + shot.height + bottom)
     d = ImageDraw.Draw(im)
 
@@ -70,7 +90,8 @@ def card(src, out, title, note, version):
     d.text((W - PAD - tw, 50), tag, font=font(16), fill=ACC)
 
     im.paste(shot, ((W - shot.width) // 2, top), shot)
-    d.text((PAD, top + shot.height + 30), note, font=font(17), fill=DIM)
+    for i, ln in enumerate(lines):
+        d.text((PAD, top + shot.height + 30 + i * lh), ln, font=f_note, fill=DIM)
 
     im.save(out, optimize=True)
     print("card:", os.path.basename(out), f"{im.width}x{im.height}")
@@ -130,23 +151,24 @@ def main():
     os.makedirs(out, exist_ok=True)
 
     card(os.path.join(raw, "02-battle.png"), os.path.join(out, "01-battle.png"),
-         "战斗详情：打的哪只怪、第几只、还剩多少血", "小怪 10 种 / 精英 5 种 / 守层者 3 种，"
-         "三围各有高低；类型前挂档位图标", a.version)
+         "战斗详情：这一只打到哪儿了，最后两行点进去看流水",
+         "前六段只读（怪物 / 血条 / 层内序号 / 生命 / 攻防 / 我方）；"
+         "「本回合」两行是唯一可点的，右侧给最新一回合的净结果", a.version)
 
-    card(os.path.join(raw, "03-claim.png"), os.path.join(out, "02-claim.png"),
-         "每日敲击与每日礼包：跨零点自动重置", "今日敲击按当日累计、上限 20,000（40 袋 × 500 敲），"
-         "到顶后只留数字并继续计数但不再掉袋；礼包固定两档、各限领一次", a.version)
+    card(os.path.join(raw, "11-fight-out.png"), os.path.join(out, "02-fight-out.png"),
+         "战斗详情 › 我对怪：基础与暴击分开列",
+         "只给总伤时，\"这一刀打了 8 倍\"分不清是暴击还是这只怪防御低 —— "
+         "前者运气、后者配装。橙色那截就是暴击附加", a.version)
 
-    card(os.path.join(raw, "04-shop.png"), os.path.join(out, "03-shop.png"),
-         "商店：单次数量一档控制", "1 / 10 / 100 / 1K / 1M / 1B / max 七档切换，"
-         "买墨晶与开墨匣共用同一档位", a.version)
+    card(os.path.join(raw, "12-fight-in.png"), os.path.join(out, "03-fight-in.png"),
+         "战斗详情 › 怪对我：怪攻与被减掉多少",
+         "只记掉血的话，高防御时看到\"1.0K\"会以为是怪太弱，看不出是自己护甲在干活；"
+         "打死那一回合整行写「打死」，因为那刀没有反击", a.version)
 
-    hp_compare(raw, os.path.join(out, "04-hp.png"), a.version)
-
-    card(os.path.join(raw, "07-note.png"), os.path.join(out, "05-note.png"),
-         "悬停 1.5 秒出注释：说不清的按钮直接讲明白",
-         "鼠标停在行上停满 1.5 秒才弹，划过不弹；设置、本命器、转生三处的按钮都带解释，"
-         "置灰的按钮照样能看（层数不够时更要说明代价）", a.version)
+    card(os.path.join(raw, "03-claim.png"), os.path.join(out, "04-claim.png"),
+         "每日敲击与每日礼包：按「折合几级强化」定标",
+         "5,000 档折合 14 级强化（发金币）、20,000 档折合 20 级（发墨晶）；"
+         "折级不随层数漂移 —— 旧的线性公式在 480 层就永久冻在 150 颗，深处等于空包", a.version)
 
 
 if __name__ == "__main__":

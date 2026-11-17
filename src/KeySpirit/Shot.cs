@@ -40,6 +40,8 @@ public static class Shot
         ("08-danger",  "danger"),        // 设置 › 危险操作：三态确认的初始态
         ("09-danger-y", "danger@1"),     // @N = 进页后把重置按钮按到第 N 档（黄）
         ("10-danger-o", "danger@2"),     // 第二档（橙）
+        ("11-fight-out", "battleOut"),   // 战斗详情 › 我对怪（三级页，v0.26.0）
+        ("12-fight-in",  "battleIn"),    // 战斗详情 › 怪对我（三级页，v0.26.0）
     };
 
     /// <summary>07 那张图解释哪一行（按可见文字模糊匹配）。</summary>
@@ -124,9 +126,9 @@ public static class Shot
         var g = Game.I;
         var s = g.S;
 
-        s.Level = 36;                     // v0.19.0 新曲线：14 层 ≈ 36 级（LvCapAt(14)）
-        s.Layer = 14;
-        s.MaxLayer = 14;
+        s.Level = 77;                     // 与 54 层配套：本命器 38 级 ≈ 0.71 × 层数，才是「刚到这一层」的样子
+        s.Layer = 54;
+        s.MaxLayer = 54;
         s.Cycle = 1;
         s.EnhBlade = 38;
         s.EnhRobe = 34;
@@ -138,8 +140,8 @@ public static class Shot
         s.TotalKills = 1268;
         s.PlaySeconds = 3600 * 7.5;
         s.DailyDate = DateTime.Now.ToString("yyyy-MM-dd");
-        s.DailyKeys = 8000;               // 5,000 档已领、20,000 档还在路上（进度文案才对）
-        s.DailyMask = 1;
+        s.DailyKeys = 20000;              // 到顶：两档都亮着，配图要能同时看清两个奖励数值
+        s.DailyMask = 0;                  // 都还没领，否则低档只剩一个「已领」看不出给多少
         s.ShopBatch = 1000;               // 商店截图要能看出「一档控制数量」的效果
         s.Bags.Clear();
         s.Bags.Add(new[] { 1.2, 0 });     // 金币袋 ×2
@@ -159,6 +161,51 @@ public static class Shot
         Set(g, "MobIndex", 4);
         typeof(Game).GetMethod("SpawnMob", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(g, null);
         Set(g, "MobHp", g.MobHpMax * 0.63);
+
+        // 回合流水（v0.26.0）：二级页「本回合」两行、两个三级页都要有内容。
+        // 这里不是硬塞几条假记录，而是真的打 —— 回合号、▸ 换怪标记、基础/暴击/减伤的
+        // 数值关系全部由结算自己产生，图里的形态跟玩家实际看到的一致。
+        {
+            var resolve = typeof(Game).GetMethod("ResolveRound", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            int eye0 = s.EnhEye;
+
+            // 1) 先用真实暴击率把 8 行打满。8 行是固定布局（换怪时不跳高度），空着像功能没做完；
+            //    最后一条不能是打死，否则「本回合：打死」会和还剩大半的血条打架；
+            //    首行的回合号也不能是 1，否则挂着 ▸#1，读者会以为上面还有内容被裁掉了。
+            for (int guard = 0; guard < 60; guard++)
+            {
+                if (g.RoundHits.Count >= Game.RoundLogMax)
+                {
+                    var first = g.RoundHits[0];
+                    var last = g.RoundHits[g.RoundHits.Count - 1];
+                    if (!last.Killed && last.No >= 2 && first.No > 1) break;
+                }
+                resolve.Invoke(g, null);
+                Set(g, "Hp", g.HpMax);                    // 每刀补满：不带着掉血，更不该力竭进休整
+            }
+
+            // 2) 最后再补一刀暴击。**顺序不能反**：上一版把暴击放在开头，结果它被 8 条上限
+            //    滚出了窗口，图上「暴击」整列空着 —— 这一版的核心卖点等于没画出来。
+            s.EnhEye = Game.CritRateFullLv;
+            for (int i = 0; i < 12; i++)
+            {
+                resolve.Invoke(g, null);
+                Set(g, "Hp", g.HpMax);
+                bool crit = false;
+                foreach (var h in g.RoundHits)
+                    foreach (var p in h.Dealt)
+                        if (p.Kind == Game.HitKind.Crit) { crit = true; break; }
+                if (crit && !g.RoundHits[g.RoundHits.Count - 1].Killed) break;
+            }
+            s.EnhEye = eye0;
+
+            // 3) 万一那刀暴击把怪秒了，再补一刀普通回合，让「本回合」显示掉血而不是「打死」
+            if (g.RoundHits[g.RoundHits.Count - 1].Killed)
+            {
+                resolve.Invoke(g, null);
+                Set(g, "Hp", g.HpMax);
+            }
+        }
     }
 
     static void Set(Game g, string prop, object value)

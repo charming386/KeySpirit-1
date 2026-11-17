@@ -769,6 +769,10 @@ public class PanelWindow : Window
         _ => page switch
         {
             "battle" => "战斗详情",
+            // 两个三级页都锚在「战斗详情」那一行：主列不新增项（8.3 的一条老约定：
+            // 三级页只在主列留父项亮着）
+            "battleOut" => "战斗详情",
+            "battleIn" => "战斗详情",
             "claim" => "领取",
             "layers" => "层数",
             "detail" => "角色",
@@ -951,6 +955,8 @@ public class PanelWindow : Window
         "layers" => page == "layers" || page == "layerInput",
         // 「危险操作」是「设置」的三级页，主列上仍然只有「设置」这一个入口亮着
         "settings" => page == "settings" || page == "danger",
+        // 「我对怪 / 怪对我」同理，都算「战斗详情」这一项开着
+        "battle" => page == "battle" || page == "battleOut" || page == "battleIn",
         _ => page == target,
     };
 
@@ -959,6 +965,10 @@ public class PanelWindow : Window
         switch (page)
         {
             case "battle": subWidth = W_DETAIL; SubTitle("战斗详情"); BuildBattle(); break;
+            // 「我对怪」「怪对我」是战斗详情的两个三级页（v0.26.0）：二级页那两行是本回合，
+            // 点进去才是 8 回合的历史。两个方向各一页，因为要看的列不是一回事。
+            case "battleOut": subWidth = W_DETAIL; SubTitle("战斗详情 › 我对怪"); BuildFightLog(true); break;
+            case "battleIn": subWidth = W_DETAIL; SubTitle("战斗详情 › 怪对我"); BuildFightLog(false); break;
             case "claim": subWidth = W_SUB; SubTitle("领取"); BuildClaim(); break;
             case "layers": subWidth = W_SUB; SubTitle("层数"); BuildLayerMenu(); break;
             case "layerInput": subWidth = W_SUB; SubTitle("前往层数"); BuildLayerInput(); break;
@@ -1056,6 +1066,15 @@ public class PanelWindow : Window
         DetailRow("攻击", () => Fmt.Small(Game.I.PlayerAtk, Fmt.DetailDigits));
         DetailRow("防御", () => Fmt.Small(Game.I.PlayerDef, Fmt.DetailDigits));
 
+        // ---- 本回合（v0.26.0）----
+        // 二级页只放两行「本回合」，历史在各自的三级页里。
+        // 原来是这一页直接铺 8 行两方向的表，问题是两套列根本不是一回事：
+        // 「我对怪」要看基础与暴击（配装 vs 运气），「怪对我」要看怪攻与被减掉多少（护甲够不够），
+        // 挤在一张表里就是 4 列数字并排，谁也读不出谁。
+        SectionRow("本回合");
+        FightEntry("对怪", "battleOut", true);
+        FightEntry("受击", "battleIn", false);
+
         var r = new Row
         {
             Box = new Border(),
@@ -1079,6 +1098,179 @@ public class PanelWindow : Window
         };
         rows.Add(r);
     }
+
+    /// <summary>
+    /// 二级页「本回合」的一行：右侧是**最新一回合的净结果**，点进去看这个方向的历史。
+    ///
+    /// 预览只给净结果、不给分项：分项要带颜色才读得懂，而 RowMake 的右侧提示只有一个 TextBlock、
+    /// 只有一种颜色。硬拼成「1.2K +590」反而让人以为 +590 是加在净结果上的（其实是净结果的一部分）。
+    /// 要分项就点进去，那里一列一项、各自上色。
+    /// </summary>
+    void FightEntry(string label, string target, bool outbound)
+    {
+        var r = RowMake(label + " ›", "—", () => SwitchPage(target),
+            note: outbound
+                ? "最近 8 回合「我打怪」的流水：基础伤害、暴击附加、实际总伤。换一只怪回合号重新从 #1 数。"
+                : "最近 8 回合「怪打我」的流水：怪的攻击、被防具减掉多少、实际掉多少血。"
+                  + "一击打死的那回合怪没有还手，记「打死」。");
+        // 必须走 Add（登记 Tick 的同时挂进子列）。只 rows.Add 的话这一行不会出现在可视树上，
+        // Tick 照跑、数字照算，但玩家看到的是一页空白 —— 这类错自测是查不出来的。
+        Add(r);
+        r.Tick = () =>
+        {
+            if (r.Hint == null) return;
+            var h = Game.I.LastHit;
+            if (h == null) { r.Hint.Text = "—"; return; }
+            // 打死的回合受击侧是空的，写「掉血 0」会被读成「怪打我 0 血」——那是另一回事
+            if (!outbound && h.Killed) { r.Hint.Text = "打死"; return; }
+            var total = outbound ? h.DealtTotal : h.TakenTotal;
+            r.Hint.Text = $"#{h.No} · {Fmt.Large(total)}";
+        };
+        r.Tick();
+    }
+
+    /// <summary>
+    /// 战斗详情 › 我对怪 / 怪对我（三级页）：最近 8 回合的**单向**流水。
+    ///
+    /// 两个方向各一页而不是一张宽表：见 BuildBattle 里那段说明。
+    /// 每页固定三列数据（回合 / 基础 / 附加 / 净结果），行数固定 8 —— 固定高度是为了
+    /// 换怪时子列不跟着跳（动态增删行会让窗口每秒抽一下，见 ApplySubLayout）。
+    /// </summary>
+    void BuildFightLog(bool outbound)
+    {
+        Add(RowMake("‹ 返回战斗详情", null, () => SwitchPage("battle")));
+        SectionRow(outbound ? "最近 8 回合 · 我对怪" : "最近 8 回合 · 怪对我");
+
+        // 列宽：回合 30 固定，基础与附加各占一星，净结果靠右自适应。
+        // 数值最长是科学记数法「9.99e+299」（9 字符 ≈ 48px），两个星列各分到 ~100px，够用有余。
+        void Cols(Grid g)
+        {
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        }
+
+        var head = new Grid { Height = 14, Margin = new Thickness(PAD_L, 0, PAD_R, 0) };
+        Cols(head);
+        {
+            var a = Text("回合", FS_TINY, Disabled);
+            var b = Text(outbound ? "基础" : "怪攻", FS_TINY, Disabled);
+            var c = Text(outbound ? "暴击" : "减伤", FS_TINY, Disabled);
+            var d = Text(outbound ? "总伤" : "掉血", FS_TINY, Disabled);
+            d.HorizontalAlignment = HorizontalAlignment.Right;
+            Grid.SetColumn(a, 0); Grid.SetColumn(b, 1); Grid.SetColumn(c, 2); Grid.SetColumn(d, 3);
+            head.Children.Add(a); head.Children.Add(b); head.Children.Add(c); head.Children.Add(d);
+        }
+        subRoot.Children.Add(head);
+
+        var cells = new List<(TextBlock No, TextBlock Base, TextBlock[] Extra, TextBlock Sum)>();
+        for (int i = 0; i < Game.RoundLogMax; i++)
+        {
+            var g = new Grid { Height = ITEM_H_SM, Margin = new Thickness(PAD_L, 0, PAD_R, 0) };
+            Cols(g);
+
+            var no = Text("", FS_HINT, Dim);
+            var bs = Text("", FS_HINT, Fg);
+            var sum = Text("", FS_HINT, outbound ? Fg : HpRed);
+            sum.HorizontalAlignment = HorizontalAlignment.Right;
+
+            // 附加列留 HitPartsMax−1 个坑（基础单独占第一列）。一个坑一个 TextBlock：
+            // 同一个块只能一种颜色，而「暴击 +590」和「减伤 −380」正是要靠颜色分开的那两项。
+            // 多出来的分项不画（记录里仍在）—— 加机制时如果会超，改 HitPartsMax 并把这一列加宽。
+            var extraHost = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var extra = new TextBlock[Math.Max(1, Game.HitPartsMax - 1)];
+            for (int k = 0; k < extra.Length; k++)
+            {
+                extra[k] = Text("", FS_HINT, Dim);
+                extra[k].Margin = new Thickness(k == 0 ? 0 : 4, 0, 0, 0);
+                extraHost.Children.Add(extra[k]);
+            }
+
+            Grid.SetColumn(no, 0); Grid.SetColumn(bs, 1); Grid.SetColumn(extraHost, 2); Grid.SetColumn(sum, 3);
+            g.Children.Add(no); g.Children.Add(bs); g.Children.Add(extraHost); g.Children.Add(sum);
+            subRoot.Children.Add(g);
+            cells.Add((no, bs, extra, sum));
+        }
+
+        var row = new Row
+        {
+            Box = new Border(),
+            Label = cells[0].No,
+            Tick = () =>
+            {
+                var hits = Game.I.RoundHits;
+                for (int i = 0; i < cells.Count; i++)
+                {
+                    var c = cells[i];
+                    if (i >= hits.Count)
+                    {
+                        // 空行保持占位高度（不 Collapsed）：换怪时子列高度不变，窗口不抽
+                        c.No.Text = ""; c.Base.Text = ""; c.Sum.Text = "";
+                        foreach (var e in c.Extra) e.Text = "";
+                        continue;
+                    }
+                    var h = hits[i];
+                    var parts = outbound ? h.Dealt : h.Taken;
+                    var total = outbound ? h.DealtTotal : h.TakenTotal;
+
+                    // No 从 1 重新数 = 换了一只（SpawnMob 重置，但旧流水不清空）。
+                    // 不标出来列表里会莫名出现「#7 → #1」，看着像数据错了。
+                    c.No.Text = (h.No == 1 ? "▸#" : "#") + h.No;
+
+                    // 打死那一刀：这一侧（受击）没有任何分项，整行写「打死」。
+                    // 写「掉血 0」会被读成「怪打我 0 血」—— 那说的是防御够高，是另一回事。
+                    if (!outbound && h.Killed)
+                    {
+                        c.Base.Text = "—";
+                        foreach (var e in c.Extra) e.Text = "";
+                        c.Sum.Text = "打死";
+                        c.Sum.Foreground = HpRed;
+                        continue;
+                    }
+
+                    c.Base.Text = "—";
+                    foreach (var e in c.Extra) e.Text = "";
+                    int slot = 0;
+                    foreach (var p in parts)
+                    {
+                        if (p.Kind == Game.HitKind.Base)
+                        {
+                            c.Base.Text = Fmt.Large(p.Amount);
+                            c.Base.Foreground = Fg;
+                            continue;
+                        }
+                        if (slot >= c.Extra.Length) continue;   // 超出界面上限：记录里还在，只是不画
+                        var (txt, fg) = HitStyle(p.Kind);
+                        c.Extra[slot].Text = txt + Fmt.Large(p.Amount);
+                        c.Extra[slot].Foreground = fg;
+                        slot++;
+                    }
+                    c.Sum.Text = Fmt.Large(total);
+                    c.Sum.Foreground = outbound ? Fg : HpRed;
+                }
+            },
+        };
+        rows.Add(row);
+        row.Tick();
+
+        // 底部说明压到一行：这一页已经 8 行 + 表头，再占两行会把整页推过子列高度上限（只能滚动）。
+        // 「▸」的含义必须写出来，否则「#6 → ▸#1」看着像数据错了。
+        subRoot.Children.Add(Grey(outbound
+            ? "总伤 = 基础 + 暴击　▸ = 换了怪（号从小到大重数）"
+            : "掉血 = 怪攻 − 减伤　▸ = 换了怪（号从小到大重数）"));
+    }
+
+    /// <summary>
+    /// 分项在界面上的样子：符号 + 颜色。**加新分项只改这里一行**（不登记就走默认）。
+    /// 颜色不是装饰：暴击是运气（橙）、减伤是护甲在干活（绿），一眼要把这两种「多打/少挨」分开。
+    /// </summary>
+    static (string Prefix, Brush Fg) HitStyle(Game.HitKind k) => k switch
+    {
+        Game.HitKind.Crit => ("+", Warn),
+        Game.HitKind.Mitigate => ("−", HpFill),
+        _ => ("+", Dim),
+    };
 
     /// <summary>怪物类型 → 图标名（Assets\mob-*.ico）。</summary>
     static string MobIconName(string type) => type switch
@@ -1111,8 +1303,8 @@ public class PanelWindow : Window
                             () => { Game.I.ClaimDaily(tier); RebuildSub(); },
                             icon: "icon-reward",
                             note: i == 0
-                                ? "5,000 敲档：只给金币，按当前层单只金币 × 60 再乘等级折算。要手动点这一行才入账。每天只有这一次，领过就灰掉，敲得再多也不会再出现。"
-                                : "20,000 敲档：只给墨晶（强化材料），随本轮最高层缓长并封顶。要手动点这一行才入账。每天只有这一次，领过就灰掉，敲得再多也不会再出现。");
+                                ? "5,000 敲档：只给金币，折合 14 级本命器的强化成本，按商店价换成金币发放。要手动点这一行才入账。每天只有这一次，领过就灰掉，敲得再多也不会再出现。"
+                                : "20,000 敲档：只给墨晶（强化材料），折合 20 级本命器的强化成本，跟着墨刃等级一起涨，深处也不会缩水。要手动点这一行才入账。每天只有这一次，领过就灰掉，敲得再多也不会再出现。");
             r.Tick = () =>
             {
                 bool claimed = Game.I.DailyClaimed(tier);
@@ -1194,13 +1386,14 @@ public class PanelWindow : Window
 
     /// <summary>
     /// 档位右侧的奖励量。**两档给的东西不一样**（v0.15.0）：
-    /// 5,000 档只有金币（吃等级乘区，越练越厚），20,000 档只有墨晶（吃最高层，封顶）。
-    /// 所以这里不能再用「金币 · 墨晶」一个模板套两档，否则会显示「+0 · 墨晶 0」。
+    /// 5,000 档只有金币，20,000 档只有墨晶。两档都按「折合几级本命器」定标（v0.24.0），
+    /// 所以数值会跟着墨刃等级涨，深处也不会退化成空包。
+    /// 这里不能再用「金币 · 墨晶」一个模板套两档，否则会显示「+0 · 墨晶 0」。
     /// </summary>
     static string DailyRewardText(int tier)
         => tier == 0
            ? $"+{Fmt.Large(Game.I.DailyGold(0))} 金币"
-           : $"墨晶 {Game.I.DailyInk(1)}";
+           : $"墨晶 {Fmt.Large(Game.I.DailyInk(1))}";
 
     void BuildLayerMenu()
     {
@@ -1466,12 +1659,10 @@ public class PanelWindow : Window
             var cost = Big.Of((double)Game.InkPrice) * n;
             bool ok = Game.I.Gold.CompareTo(cost) >= 0 && n.CompareTo(Big.Zero) > 0;
             buy.Label.Text = $"买墨晶 ×{ShopQtyText(n)}";
-            buy.Label.Foreground = ok ? Fg : Disabled;
-            if (buy.Hint != null)
-            {
-                buy.Hint.Text = ok ? $"{Fmt.Large(cost)} 金币" : "金币不足";
-                buy.Hint.Foreground = ok ? Dim : Warn;
-            }
+            buy.Muted = !ok;
+            buy.HintWarn = !ok;
+            if (buy.Hint != null) buy.Hint.Text = ok ? $"{Fmt.Large(cost)} 金币" : "金币不足";
+            Paint(buy);
         };
         rows.Add(buy);
         Add(buy);
@@ -1479,15 +1670,43 @@ public class PanelWindow : Window
         var shortfall = s.InkShortfall(0);
         // 行内只放「花多少金币」：颗数 + 总价一起塞会挤掉左侧标签（科学计数法改成 3 位小数后
         // 多出两个字符，实测「补到够升墨刃」直接变成「补到够…」）。颗数与单价挪到悬停注释里。
-        Add(RowMake("补到够升墨刃",
+        //
+        // v0.24.1 修：「金币不足」这条提示以前漏了这一行。它只按「墨晶还差多少」决定能不能点，
+        // 从来没看金币够不够 —— 于是金币差好几个数量级时，它照样白字写着「花 52.5B 金币」、
+        // 鼠标移上去还是小手，点下去却什么都没发生（FillToNext 里 AffordCount < 1 就静默返回）。
+        // 和上面两行摆在一起，就是「两行说金币不足、中间一行不说」。
+        // 所以它现在跟买墨晶/开墨匣同一套：行恒可点，状态每秒重判，买不起就灰字 + 红字提示。
+        var fill = RowMake("补到够升墨刃",
             shortfall.CompareTo(Big.Zero) > 0
                 ? $"花 {Fmt.Large(shortfall * Game.InkPrice)} 金币"
                 : "已够",
             () => { Game.I.FillToNext(0); RebuildSub(); },
-            enabled: shortfall.CompareTo(Big.Zero) > 0, icon: "",
+            enabled: true, icon: "",
             note: shortfall.CompareTo(Big.Zero) > 0
                 ? $"还差 {Fmt.Large(shortfall)} 颗墨晶（单价 {Game.InkPrice} 金币），一次补齐到能再升一级墨刃。"
-                : "墨晶已经够升一级墨刃，不用补。"));
+                : "墨晶已经够升一级墨刃，不用补。");
+        // 金币每秒在涨、墨晶也被别处花，所以「补不补得起」必须每秒重判，不能在建行时算一次。
+        fill.Tick = () =>
+        {
+            var need = Game.I.InkShortfall(0);
+            bool hasNeed = need.CompareTo(Big.Zero) > 0;
+            var cost = need * Game.InkPrice;
+            bool ok = hasNeed && Game.I.Gold.CompareTo(cost) >= 0;
+            fill.Label.Text = "补到够升墨刃";
+            fill.Muted = !ok;                       // 已够 或 买不起 → 灰字
+            fill.HintWarn = hasNeed && !ok;         // 只有「差墨晶但金币不够」才标红
+            if (fill.Hint != null)
+                fill.Hint.Text = !hasNeed ? "已够" : ok ? $"花 {Fmt.Large(cost)} 金币" : "金币不足";
+            fill.Note = !hasNeed
+                ? "墨晶已经够升一级墨刃，不用补。"
+                : ok
+                    ? $"还差 {Fmt.Large(need)} 颗墨晶（单价 {Game.InkPrice} 金币），一次补齐到能再升一级墨刃。"
+                    : $"还差 {Fmt.Large(need)} 颗墨晶（单价 {Game.InkPrice} 金币），全补齐要 {Fmt.Large(cost)} 金币。"
+                      + $"现在金币不够，点下去只会按买得起的部分补 {Fmt.Large(Game.I.AffordCount(Game.InkPrice))} 颗。";
+            Paint(fill);                            // 灰字由 Paint 统一上，别绕过它直接改 Foreground
+        };
+        rows.Add(fill);
+        Add(fill);
 
         var boxN = ShopCount(250);
         var boxCost = Big.Of(250.0) * boxN;
@@ -1500,12 +1719,10 @@ public class PanelWindow : Window
             var cost = Big.Of(250.0) * n;
             bool ok = Game.I.Gold.CompareTo(cost) >= 0 && n.CompareTo(Big.Zero) > 0;
             open.Label.Text = $"开墨匣 ×{ShopQtyText(n)}";
-            open.Label.Foreground = ok ? Fg : Disabled;
-            if (open.Hint != null)
-            {
-                open.Hint.Text = ok ? $"{Fmt.Large(cost)} 金币" : "金币不足";
-                open.Hint.Foreground = ok ? Dim : Warn;
-            }
+            open.Muted = !ok;
+            open.HintWarn = !ok;
+            if (open.Hint != null) open.Hint.Text = ok ? $"{Fmt.Large(cost)} 金币" : "金币不足";
+            Paint(open);
         };
         rows.Add(open);
         Add(open);
@@ -1661,8 +1878,8 @@ public class PanelWindow : Window
     /// </summary>
     static string RebirthHint(bool confirm)
     {
-        if (!Game.I.CanRebirth) return "需达 50 层";
-        return confirm ? "⚠ 金币墨晶清零" : "第 1 层重开";
+        if (!Game.I.CanRebirth) return $"需达 {Game.I.RebirthGate} 层";
+        return confirm ? "⚠ 金币墨晶本命器全清" : "第 1 层重开";
     }
 
     void BuildDetail()
@@ -1676,18 +1893,24 @@ public class PanelWindow : Window
             // 本页（角色详情）统一 3 位小数：这里是「看涨幅」的地方，主列血条旁仍是 1 位。
             int D = Fmt.DetailDigits;
             DetailRow("等级", () => $"Lv {Game.I.Level} · 经验 {Fmt.Large(Game.I.Exp, D)} / {Fmt.Large(Game.I.ExpNeed, D)}");
-            // 每级加点与「还差多少只怪」——升级不再是只涨一个乘区，面板上要看得见
-            DetailRow("每级", () => $"+{Game.LvAtkGain:0.#} 攻 · +{Game.LvHpGain:0.#} 血 · +{Game.LvDefGain:0.#} 防");
-            DetailRow("距下一级", () => $"约 {Game.I.ExpKills:0.#} 只同层小怪");
+            // 每级加点与「还差多少只怪」并成一行（v0.22.0）：详情页高度封顶在主列的 0.9 倍，
+            // 这一版又给生命/攻击/防御各加了一行墨根拆解，只能从这两行里腾空间。
+            // 两者本来就是同一件事的两面（「升一级给多少 / 还差多少升级」），合并不丢信息。
+            DetailRow("下一级", () => $"约 {Game.I.ExpKills:0.#} 只小怪（每级 +{Game.LvAtkGain:0.#} 攻 · +{Game.LvHpGain:0.#} 血 · +{Game.LvDefGain:0.#} 防）");
             DetailRow("生命", () => $"{Fmt.Large(Game.I.Hp, D)} / {Fmt.Large(Game.I.HpMax, D)}（本体 {Fmt.Small(Game.I.BaseHp, D)}）");
+            DetailRootRow(() => Game.I.HpRootGain);
             DetailRow("攻击", () => $"{Fmt.Small(Game.I.PlayerAtk, D)}（本体 {Fmt.Small(Game.I.BaseAtk, D)}）");
+            DetailRootRow(() => Game.I.AtkRootGain);
             DetailRow("防御", () => $"{Fmt.Small(Game.I.PlayerDef, D)}（本体 {Fmt.Small(Game.I.BaseDef, D)}）");
+            DetailRootRow(() => Game.I.DefRootGain);
             DetailRow("暴击", () => Game.I.S.EnhEye >= Game.CritRateFullLv
                 ? $"{Fmt.Pct(Game.I.CritRate, 2)}（暴击率已满） · 暴伤 ×{(1 + Game.I.CritDmg):0.000}"
                 : $"{Fmt.Pct(Game.I.CritRate, 2)} · 暴伤 ×{(1 + Game.I.CritDmg):0.000}");
             // 上限放到 10 万之后，分母写出来只会让人盯着一个永远到不了的数字，
             // 这里只报乘区。真正的「上限」交给 ×1.07 的成本曲线自己解释。
-            DetailRow("墨根", () => $"{Game.I.S.Root}（×{Fmt.Large(Big.Pow(1.06, Game.I.S.Root), D)}）");
+            // 乘区走 Game.RootMul，不在面板里重写一遍 Pow(1.06,…)：v0.20.0 把基数改成 1.05 时，
+            // 面板这里如果还留着旧字面量，就会显示一个和实际属性对不上的数字。
+            DetailRow("墨根", () => $"{Game.I.S.Root}（×{Fmt.Large(Game.I.RootMul, D)}）");
             DetailRow("层数", () => $"第 {Game.I.Layer} 层 · 最高 {Game.I.MaxLayer} · 第 {Game.I.S.Cycle} 轮");
             // 状态带倒计时：这一行每秒随 LiveRefresh 重读，所以修整中的秒数会自己往下走。
             DetailRow("状态", () => Game.I.S.Paused ? "已暂停"
@@ -1702,11 +1925,13 @@ public class PanelWindow : Window
                 if (!Game.I.CanRebirth) return;
                 if ((DateTime.UtcNow - rebirthClickAt).TotalSeconds >= 10) { rebirthClickAt = DateTime.UtcNow; RebuildSub(); return; }
                 Game.I.Rebirth();
-                Flash("转生完成：金币与墨晶已清零，本命器强化保留");
+                Flash("转生完成：金币、墨晶、本命器已归零，墨根保留");
                 RebuildSub();
             }, enabled: s.CanRebirth, warn: true,
-               note: "转生会清空金币、墨晶与待领金币袋——喂进本命器的强化等级和墨根都保留，"
-                   + "所以转生前最好先把墨晶花掉。按本轮最高层换墨根，每点 +6% 全属性。");
+               note: "转生会清空金币、墨晶、待领金币袋，并把四件本命器的强化等级一起归零——"
+                   + "只有墨根留下。解锁线每转一次抬 25 层（下一次是第 "
+                   + $"{Game.I.S.Rebirths + 1} 次转生，需 {Game.I.RebirthGate} 层），"
+                   + "所以每一轮都得比上一轮走得更远。按本轮最高层换墨根（每层 0.175 根），每点 +5% 全属性。");
             rb.Tick = () =>
             {
                 int gain = Game.I.RebirthGain;
@@ -1756,6 +1981,14 @@ public class PanelWindow : Window
         public int NoteDelayMs = 1500;
         /// <summary>三态底纹：0 常态 / 1 黄 / 2 橙。只有「初始化重置」会用。</summary>
         public int Tone;
+        /// <summary>
+        /// Tick 判定「这一行现在用不了」时置 true：买不起、缺口为零。上灰字。
+        /// **必须走这里而不是直接改 Label.Foreground**——悬停/移出都会调 Paint，
+        /// Paint 会把字色还原成建行时捕获的 FgDefault，直接改的灰字一移上去就白回来了。
+        /// </summary>
+        public bool Muted;
+        /// <summary>右侧提示要不要标红（金币不足）。同样由 Paint 裁决，理由见 Muted。</summary>
+        public bool HintWarn;
         /// <summary>标签的原始字色。Tone 归零时要还原，否则会停在深红上。</summary>
         public Brush? FgDefault;
         /// <summary>右侧提示的原始字色（默认 Dim）。黄底上灰字看不见，Tone 态同样要换色。</summary>
@@ -1780,8 +2013,8 @@ public class PanelWindow : Window
             if (r.Hint != null) r.Hint.Foreground = r.Tone == 1 ? DangerFgOnYellow : DangerFgOnOrange;
             return;
         }
-        r.Label.Foreground = r.FgDefault ?? Fg;
-        if (r.Hint != null) r.Hint.Foreground = r.HintFgDefault ?? Dim;
+        r.Label.Foreground = r.Muted ? Disabled : (r.FgDefault ?? Fg);
+        if (r.Hint != null) r.Hint.Foreground = r.HintWarn ? Warn : (r.HintFgDefault ?? Dim);
 
         bool on = r.Active?.Invoke() ?? false;
         r.Box.Background = on ? BgActive : (r.Hovered ? BgHover : Brushes.Transparent);
@@ -1847,10 +2080,12 @@ public class PanelWindow : Window
 
         // 注释气泡与"能不能点"解耦：置灰的行（墨晶不足 / 层数不够转生）反而更需要解释，
         // 所以只要给了 note 就挂悬停，不看 enabled。
+        // 读 row.Note 而不是闭包捕获的参数：有几行的注释要随状态换（补到够升墨刃：
+        // 「还差 N 颗」/「金币不够」/「已够」），捕获参数就永远停在建行那一句上。
         if (note != null)
         {
             row.Note = note;
-            box.MouseEnter += (_, _) => BeginNote(row, note);
+            box.MouseEnter += (_, _) => { if (row.Note != null) BeginNote(row, row.Note!); };
             box.MouseLeave += (_, _) => EndNote(row);
         }
 
@@ -2052,6 +2287,33 @@ public class PanelWindow : Window
 
         var r = new Row { Box = new Border(), Label = b, Tick = () => b.Text = val() };
         rows.Add(r);
+    }
+
+    /// <summary>
+    /// 属性行下方的「墨根 +Y」补充行（v0.22.0）：小字、暗色、缩进到值列。
+    ///
+    /// 为什么另起一行、不塞进属性行的括号里：详情值列只有 230px 上下，
+    /// 大数时 `5.550e+15 / 5.550e+15（本体 1.200e+03）` 已经快占满，
+    /// 再往后接「· 墨根 +4.543e+15」必然被挤成省略号。另起一行既放得下，也和属性行左右对齐。
+    ///
+    /// 墨根为 0 时整行不建（前期不该被三行「+0」占位置）；转生会 RebuildSub 重建本页，
+    /// 所以「0 → 有」的那一刻不需要动态插入控件。
+    /// </summary>
+    void DetailRootRow(Func<Big> gain)
+    {
+        if (gain().IsZero) return;
+
+        var grid = new Grid { Height = 14, Margin = new Thickness(PAD_L, 0, PAD_R, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var b = Text("", FS_TINY, Dim);
+        Grid.SetColumn(b, 1);
+        grid.Children.Add(b);
+        subRoot.Children.Add(grid);
+
+        string Txt() => $"墨根 +{Fmt.Large(gain(), Fmt.DetailDigits)}";
+        b.Text = Txt();
+        rows.Add(new Row { Box = new Border(), Label = b, Tick = () => b.Text = Txt() });
     }
 
     void StaticRow(string k, string v)
